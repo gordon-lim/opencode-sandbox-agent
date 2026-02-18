@@ -23,6 +23,24 @@ function sseData(envelope: SSEEnvelope): string {
 export function chatRoutes() {
   const router = new Hono()
 
+  router.get('/chat/options', async (c) => {
+    const pilot = new SandboxPilot()
+
+    try {
+      const options = await pilot.listChatOptions()
+      return c.json(options)
+    } catch (err) {
+      if (err instanceof OpencodePilotError) {
+        return c.json(
+          { error: err.message, code: 'OPENCODE_UNREACHABLE' },
+          502,
+        )
+      }
+      const message = err instanceof Error ? err.message : 'Unexpected error'
+      return c.json({ error: message, code: 'INTERNAL_ERROR' }, 500)
+    }
+  })
+
   router.post('/chat', async (c) => {
     let body: ChatRequestBody
 

@@ -1,8 +1,9 @@
-import Opencode from '@opencode-ai/sdk'
-import type { Session, AssistantMessage } from '@opencode-ai/sdk/resources/session'
-import type { EventListResponse } from '@opencode-ai/sdk/resources/event'
-import type { Stream } from '@opencode-ai/sdk/core/streaming'
-import { APIConnectionError, APIConnectionTimeoutError } from '@opencode-ai/sdk/core/error'
+import {
+  createOpencodeClient,
+  type AssistantMessage,
+  type Event as OpencodeEvent,
+  type Session,
+} from '@opencode-ai/sdk/v2'
 import { WORKSPACE_ROOT } from '../workspace/config'
 
 export class OpencodePilotError extends Error {
@@ -18,39 +19,61 @@ export interface ChatOptions {
   system?: string
 }
 
+export interface ChatModelOption {
+  id: string
+  name: string
+}
+
+export interface ChatProviderOption {
+  id: string
+  name: string
+  connected: boolean
+  defaultModelID?: string
+  models: ChatModelOption[]
+}
+
+export interface ChatOptionsCatalog {
+  providers: ChatProviderOption[]
+}
+
+type SessionPromptParams = Parameters<ReturnType<typeof createOpencodeClient>['session']['prompt']>[0]
+
 export class SandboxPilot {
-  readonly client: Opencode
+  readonly client: ReturnType<typeof createOpencodeClient>
 
   constructor(opts?: { baseURL?: string }) {
-    const baseURL = opts?.baseURL ?? process.env.OPENCODE_BASE_URL ?? 'http://localhost:54321'
+    const baseUrl = opts?.baseURL ?? process.env.OPENCODE_BASE_URL ?? 'http://localhost:54321'
     const opencodePassword = process.env.OPENCODE_SERVER_PASSWORD
     const opencodeUsername = process.env.OPENCODE_SERVER_USERNAME ?? 'opencode'
-    const defaultHeaders: Record<string, string> = {
+    const headers: Record<string, string> = {
       'x-opencode-directory': WORKSPACE_ROOT,
     }
 
     if (opencodePassword) {
       const encoded = Buffer.from(`${opencodeUsername}:${opencodePassword}`, 'utf8').toString('base64')
-      defaultHeaders.Authorization = `Basic ${encoded}`
+      headers.Authorization = `Basic ${encoded}`
     }
 
-    this.client = new Opencode({
-      baseURL,
-      defaultHeaders,
+    this.client = createOpencodeClient({
+      baseUrl,
+      headers,
     })
   }
 
   async createSession(): Promise<Session> {
     try {
-      return await this.client.session.create()
+      const result = await this.client.session.create(undefined, {
+        throwOnError: true,
+      })
+      return result.data
     } catch (err) {
-      if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
+      if (isConnectionError(err)) {
         throw new OpencodePilotError(
-          `Cannot reach opencode server: ${(err as Error).message}`,
+          `Cannot reach opencode server: ${normalizeError(err).message}`,
           err,
         )
       }
-      throw err
+      throw normalizeError(err)
     }
   }
 
@@ -59,35 +82,121 @@ export class SandboxPilot {
     message: string,
     opts: ChatOptions,
   ): Promise<AssistantMessage> {
-    try {
-      return await this.client.session.chat(sessionId, {
+    const promptPayload = {
+      sessionID: sessionId,
+      model: {
         modelID: opts.modelID,
         providerID: opts.providerID,
-        system: opts.system,
-        parts: [{ type: 'text', text: message }],
+      },
+      system: opts.system,
+      parts: [{ type: 'text', text: message }],
+    } satisfies SessionPromptParams
+
+    try {
+      const result = await this.client.session.prompt(promptPayload, {
+        throwOnError: true,
       })
+      return result.data.info
     } catch (err) {
-      if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
+      if (isConnectionError(err)) {
         throw new OpencodePilotError(
-          `Cannot reach opencode server: ${(err as Error).message}`,
+          `Cannot reach opencode server: ${normalizeError(err).message}`,
           err,
         )
       }
-      throw err
+      throw normalizeError(err)
     }
   }
 
-  async subscribe(): Promise<Stream<EventListResponse>> {
+  async subscribe(signal: AbortSignal): Promise<AsyncGenerator<OpencodeEvent>> {
+    const result = await this.client.event.subscribe(undefined, { signal })
+    return result.stream
+  }
+
+  async listChatOptions(): Promise<ChatOptionsCatalog> {
     try {
-      return await this.client.event.list()
+      const result = await this.client.provider.list(undefined, {
+        throwOnError: true,
+      })
+
+      const data = result.data
+      const connected = new Set(Array.isArray(data.connected) ? data.connected : [])
+      const defaults =
+        data.default && typeof data.default === 'object'
+          ? (data.default as Record<string, unknown>)
+          : {}
+
+      const all = Array.isArray(data.all) ? data.all : []
+      const providers: ChatProviderOption[] = []
+
+      for (const provider of all) {
+        const providerID = typeof provider.id === 'string' ? provider.id : ''
+        if (!providerID) {
+          continue
+        }
+
+        const providerName =
+          typeof provider.name === 'string' && provider.name.trim()
+            ? provider.name.trim()
+            : providerID
+
+        const modelEntries =
+          provider.models && typeof provider.models === 'object'
+            ? Object.entries(provider.models)
+            : []
+
+        const models: ChatModelOption[] = modelEntries
+          .map(([modelID, modelValue]) => {
+            const modelName =
+              modelValue && typeof modelValue === 'object' && 'name' in modelValue
+                ? (modelValue as { name?: unknown }).name
+                : undefined
+
+            return {
+              id: modelID,
+              name:
+                typeof modelName === 'string' && modelName.trim()
+                  ? modelName.trim()
+                  : modelID,
+            }
+          })
+          .sort((a, b) => a.id.localeCompare(b.id))
+
+        if (models.length === 0) {
+          continue
+        }
+
+        const defaultModelID = defaults[providerID]
+        const item: ChatProviderOption = {
+          id: providerID,
+          name: providerName,
+          connected: connected.has(providerID),
+          models,
+        }
+
+        if (typeof defaultModelID === 'string' && defaultModelID.trim()) {
+          item.defaultModelID = defaultModelID
+        }
+
+        providers.push(item)
+      }
+
+      providers.sort((a, b) => {
+        if (a.connected !== b.connected) {
+          return a.connected ? -1 : 1
+        }
+        return a.id.localeCompare(b.id)
+      })
+
+      return { providers }
     } catch (err) {
-      if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
+      if (isConnectionError(err)) {
         throw new OpencodePilotError(
-          `Cannot connect to opencode event stream: ${(err as Error).message}`,
+          `Cannot reach opencode server: ${normalizeError(err).message}`,
           err,
         )
       }
-      throw err
+      throw normalizeError(err)
     }
   }
 
@@ -95,17 +204,35 @@ export class SandboxPilot {
     sessionId: string,
     message: string,
     opts: ChatOptions,
-  ): AsyncGenerator<EventListResponse> {
+  ): AsyncGenerator<OpencodeEvent> {
     // 1. Subscribe FIRST so we miss no events
-    const stream = await this.subscribe()
+    const streamController = new AbortController()
+    const stream = await this.subscribe(streamController.signal)
+    let promptError: unknown
 
     try {
-      // 2. Send the chat message
-      await this.chat(sessionId, message, opts)
+      // Kick off stream consumption immediately (v2 SSE stream is lazy).
+      // This ensures /event starts before we send the prompt.
+      let pending = stream.next()
 
-      // 3. Iterate events, filter by sessionId, yield matching ones
-      for await (const event of stream) {
+      // 2. Send the chat message in parallel.
+      const promptPromise = this.chat(sessionId, message, opts).catch((err) => {
+        promptError = err
+        // If prompt fails, stop waiting on the stream.
+        streamController.abort()
+        throw err
+      })
+
+      // 3. Iterate events, filter by sessionId, yield matching ones.
+      while (true) {
+        const next = await pending
+        if (next.done) {
+          break
+        }
+
+        const event = next.value
         const relevant = isEventForSession(event, sessionId)
+        pending = stream.next()
         if (!relevant) continue
 
         yield event
@@ -115,9 +242,24 @@ export class SandboxPilot {
           break
         }
       }
+
+      // 5. Surface prompt failures after streaming terminal event(s).
+      await promptPromise
+    } catch (err) {
+      const rootErr = promptError ?? err
+      if (rootErr instanceof OpencodePilotError) {
+        throw rootErr
+      }
+      if (isConnectionError(rootErr)) {
+        throw new OpencodePilotError(
+          `Cannot connect to opencode event stream: ${normalizeError(rootErr).message}`,
+          rootErr,
+        )
+      }
+      throw normalizeError(rootErr)
     } finally {
-      // 5. Always abort the underlying HTTP stream
-      stream.controller.abort()
+      // Always abort the underlying HTTP stream.
+      streamController.abort()
     }
   }
 }
@@ -125,43 +267,129 @@ export class SandboxPilot {
 /**
  * Returns true if the event belongs to (or should pass through for) the given sessionId.
  */
-function isEventForSession(event: EventListResponse, sessionId: string): boolean {
+function isEventForSession(event: OpencodeEvent, sessionId: string): boolean {
   switch (event.type) {
+    case 'session.created':
     case 'session.idle':
-      return event.properties.sessionID === sessionId
+      return event.type === 'session.created'
+        ? event.properties.info.id === sessionId
+        : event.properties.sessionID === sessionId
 
     case 'session.error':
       // sessionID is optional on session.error
       return event.properties.sessionID === sessionId || event.properties.sessionID === undefined
 
+    case 'session.status':
+    case 'session.compacted':
+    case 'session.diff':
+    case 'todo.updated':
+    case 'command.executed':
+    case 'permission.asked':
+    case 'permission.replied':
+    case 'question.asked':
+    case 'question.replied':
+    case 'question.rejected':
+      return event.properties.sessionID === sessionId
+
     case 'session.updated':
     case 'session.deleted':
       return event.properties.info.id === sessionId
 
-    case 'message.updated': {
-      const info = event.properties.info
-      // Message has sessionID on both UserMessage and AssistantMessage
-      return (info as { sessionID: string }).sessionID === sessionId
-    }
-
+    case 'message.updated':
+      // Message has sessionID on both UserMessage and AssistantMessage.
+      return event.properties.info.sessionID === sessionId
     case 'message.removed':
+    case 'message.part.delta':
+    case 'message.part.removed':
       return event.properties.sessionID === sessionId
 
-    case 'permission.updated':
-      return event.properties.sessionID === sessionId
+    case 'message.part.updated':
+      return event.properties.part.sessionID === sessionId
 
     // Pass-through events — global agent activity, always include
-    case 'message.part.updated':
-    case 'message.part.removed':
     case 'file.edited':
     case 'installation.updated':
-    case 'ide.installed':
+    case 'installation.update-available':
     case 'lsp.client.diagnostics':
-    case 'storage.write':
     case 'file.watcher.updated':
+    case 'project.updated':
+    case 'server.instance.disposed':
+    case 'server.connected':
+    case 'global.disposed':
+    case 'tui.prompt.append':
+    case 'tui.command.execute':
+    case 'tui.toast.show':
+    case 'tui.session.select':
+    case 'mcp.tools.changed':
+    case 'mcp.browser.open.failed':
+    case 'vcs.branch.updated':
+    case 'pty.created':
+    case 'pty.updated':
+    case 'pty.exited':
+    case 'pty.deleted':
+    case 'worktree.ready':
+    case 'worktree.failed':
       return true
 
     default:
       return false
   }
+}
+
+function normalizeError(err: unknown): Error {
+  if (err instanceof Error) {
+    return err
+  }
+
+  const message = extractErrorMessage(err)
+  if (message) {
+    return new Error(message)
+  }
+
+  try {
+    return new Error(JSON.stringify(err))
+  } catch {
+    return new Error('Unknown opencode error')
+  }
+}
+
+function extractErrorMessage(err: unknown): string {
+  if (typeof err === 'string') {
+    return err
+  }
+
+  if (!err || typeof err !== 'object') {
+    return ''
+  }
+
+  const direct = err as { message?: unknown; data?: unknown }
+  if (typeof direct.message === 'string' && direct.message.trim()) {
+    return direct.message
+  }
+
+  if (direct.data && typeof direct.data === 'object') {
+    const nestedMessage = (direct.data as { message?: unknown }).message
+    if (typeof nestedMessage === 'string' && nestedMessage.trim()) {
+      return nestedMessage
+    }
+  }
+
+  return ''
+}
+
+function isConnectionError(err: unknown): boolean {
+  const normalized = normalizeError(err)
+  const message = normalized.message.toLowerCase()
+
+  return (
+    normalized.name === 'AbortError' ||
+    normalized.name === 'TypeError' ||
+    message.includes('fetch failed') ||
+    message.includes('econnrefused') ||
+    message.includes('enotfound') ||
+    message.includes('etimedout') ||
+    message.includes('network') ||
+    message.includes('timeout') ||
+    message.includes('sse failed')
+  )
 }

@@ -3,6 +3,7 @@
 Node + Hono service that exposes:
 
 - `POST /chat` (streaming SSE proxy to an opencode session)
+- `GET /chat/options` (provider/model catalog from the connected opencode server)
 - `GET /workspace/tree` (authenticated file tree for the sandbox root)
 - `GET /workspace/file` (authenticated text file preview)
 - Browser UI at `/` with two panels (left: workspace explorer, right: `/chat` client)
@@ -60,6 +61,7 @@ yarn dev
 
 - `http://localhost:3000` (or your configured `PORT`)
 - Paste `AGENT_API_KEY` into the UI’s "Agent API Key" field and click "Connect"
+- Provider/model dropdowns are loaded from your running opencode server (no hardcoded model list)
 - Use the left panel to browse files and the right panel to chat
 
 ## Run Modes
@@ -88,8 +90,9 @@ yarn start
 
 ## SDK + Runtime Notes
 
-- Current local SDK dependency (`@opencode-ai/sdk@0.1.0-alpha.21` from `../opencode-sdk-js`) is effectively client-only for this project's current integration.
-- Newer SDK (`@opencode-ai/sdk` 1.x) exposes server helpers in root and v2 exports (`createOpencodeServer()`, `createOpencode()`).
+- This app uses `@opencode-ai/sdk/v2` APIs (`session.prompt()`, `event.subscribe()`) via `@opencode-ai/sdk`.
+- In this repo the dependency points at a local v2-capable SDK source (`file:../opencode/packages/sdk/js`).
+- SDK 1.x exports server helpers in both root and v2 (`createOpencodeServer()`, `createOpencode()`).
 - These helpers do not embed opencode server code in-process. They spawn external `opencode serve` as a child process, so the `opencode` binary/runtime still must be installed.
 
 ## API Quick Use
@@ -120,13 +123,20 @@ curl -H "Authorization: Bearer $AGENT_API_KEY" \
   "http://localhost:3000/workspace/file?path=src/index.ts"
 ```
 
+### Chat options (provider/model catalog)
+
+```bash
+curl -H "Authorization: Bearer $AGENT_API_KEY" \
+  "http://localhost:3000/chat/options"
+```
+
 ### Chat (SSE stream)
 
 ```bash
 curl -N \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"message":"hello","modelID":"gpt-4.1","providerID":"openai"}' \
+  -d '{"message":"hello","modelID":"<model-id-from-/chat/options>","providerID":"<provider-id-from-/chat/options>"}' \
   http://localhost:3000/chat
 ```
 

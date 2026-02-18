@@ -13,6 +13,7 @@ app.route('/', uiRoutes())
 
 // POST /chat
 app.use('/chat', bearerAuth())
+app.use('/chat/*', bearerAuth())
 app.route('/', chatRoutes())
 
 // Workspace API routes
