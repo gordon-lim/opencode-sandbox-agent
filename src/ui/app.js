@@ -11,6 +11,7 @@ const modelInput = document.getElementById('modelInput')
 const providerInput = document.getElementById('providerInput')
 const usernameInput = document.getElementById('usernameInput')
 const systemInput = document.getElementById('systemInput')
+const streamToggle = document.getElementById('streamToggle')
 const messageInput = document.getElementById('messageInput')
 const sendButton = document.getElementById('sendButton')
 const sessionBadge = document.getElementById('sessionBadge')
@@ -21,6 +22,7 @@ const STORAGE_KEYS = {
   providerID: 'sandboxed-provider-id',
   username: 'sandboxed-username',
   systemPrompt: 'sandboxed-system-prompt',
+  streamEnabled: 'sandboxed-stream-enabled',
   sessionID: 'sandboxed-session-id',
 }
 
@@ -219,6 +221,10 @@ async function loadChatOptions(options = {}) {
 apiKeyInput.value = localStorage.getItem(STORAGE_KEYS.apiKey) ?? ''
 usernameInput.value = localStorage.getItem(STORAGE_KEYS.username) ?? ''
 systemInput.value = localStorage.getItem(STORAGE_KEYS.systemPrompt) ?? ''
+{
+  const savedStreamPreference = localStorage.getItem(STORAGE_KEYS.streamEnabled)
+  streamToggle.checked = savedStreamPreference === null ? true : savedStreamPreference === '1'
+}
 updateSessionBadge()
 applyFallbackChatOptions()
 
@@ -249,6 +255,10 @@ apiKeyInput.addEventListener('input', () => {
 providerInput.addEventListener('change', () => {
   const providerID = providerInput.value.trim()
   renderModelOptionsForProvider(providerID, '')
+})
+
+streamToggle.addEventListener('change', () => {
+  localStorage.setItem(STORAGE_KEYS.streamEnabled, streamToggle.checked ? '1' : '0')
 })
 
 chatForm.addEventListener('submit', async (event) => {
@@ -907,6 +917,7 @@ async function sendMessage() {
   const providerID = providerInput.value.trim()
   const username = usernameInput.value.trim()
   const system = systemInput.value.trim()
+  const stream = streamToggle.checked
 
   if (!modelID || !providerID) {
     appendChatMessage('system', 'modelID and providerID are required.')
@@ -924,11 +935,13 @@ async function sendMessage() {
   localStorage.setItem(STORAGE_KEYS.providerID, providerID)
   localStorage.setItem(STORAGE_KEYS.username, username)
   localStorage.setItem(STORAGE_KEYS.systemPrompt, system)
+  localStorage.setItem(STORAGE_KEYS.streamEnabled, stream ? '1' : '0')
 
   appendChatMessage('user', message)
   messageInput.value = ''
   state.streaming = true
   sendButton.disabled = true
+  streamToggle.disabled = true
 
   try {
     const payload = {
@@ -936,6 +949,7 @@ async function sendMessage() {
       message,
       modelID,
       providerID,
+      stream,
       username: username || undefined,
       system: system || undefined,
     }
@@ -958,6 +972,7 @@ async function sendMessage() {
   } finally {
     state.streaming = false
     sendButton.disabled = false
+    streamToggle.disabled = false
     requestWorkspaceRefresh()
   }
 }

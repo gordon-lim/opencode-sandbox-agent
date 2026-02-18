@@ -7,6 +7,7 @@ interface ChatRequestBody {
   message: string
   modelID: string
   providerID: string
+  stream?: boolean
   username?: string
   system?: string
 }
@@ -60,6 +61,9 @@ export function chatRoutes() {
     if (!body.providerID || typeof body.providerID !== 'string') {
       return c.json({ error: 'providerID is required and must be a string' }, 400)
     }
+    if (body.stream !== undefined && typeof body.stream !== 'boolean') {
+      return c.json({ error: 'stream must be a boolean when provided' }, 400)
+    }
     if (body.username !== undefined && typeof body.username !== 'string') {
       return c.json({ error: 'username must be a string when provided' }, 400)
     }
@@ -85,6 +89,7 @@ export function chatRoutes() {
         for await (const event of pilot.chatAndStream(sessionId, body.message, {
           modelID: body.modelID,
           providerID: body.providerID,
+          stream: body.stream,
           username: body.username,
           system: body.system,
         })) {

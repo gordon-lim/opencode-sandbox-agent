@@ -62,6 +62,9 @@ yarn dev
 - `http://localhost:3000` (or your configured `PORT`)
 - Paste `AGENT_API_KEY` into the UI’s "Agent API Key" field and click "Connect"
 - Provider/model dropdowns are loaded from your running opencode server (no hardcoded model list)
+- Stream toggle controls prompt mode:
+  - On: `session.promptAsync()` (event-stream-first behavior)
+  - Off: `session.prompt()` (waits for full message, then emits complete parts)
 - Optional: set `Username` in the chat form to include user context in each `/chat` request
 - Use the left panel to browse files and the right panel to chat
 
@@ -91,10 +94,11 @@ yarn start
 
 ## SDK + Runtime Notes
 
-- This app uses `@opencode-ai/sdk/v2` APIs (`session.prompt()`, `event.subscribe()`) via `@opencode-ai/sdk`.
+- This app uses `@opencode-ai/sdk/v2` APIs (`session.promptAsync()`, `event.subscribe()`) via `@opencode-ai/sdk`.
 - In this repo the dependency points at a local v2-capable SDK source (`file:../opencode/packages/sdk/js`).
 - SDK 1.x exports server helpers in both root and v2 (`createOpencodeServer()`, `createOpencode()`).
 - These helpers do not embed opencode server code in-process. They spawn external `opencode serve` as a child process, so the `opencode` binary/runtime still must be installed.
+- SDK v0 (`@opencode-ai/sdk` 0.x, including `session.chat`) is not supported in this repo.
 
 ## API Quick Use
 
@@ -137,7 +141,7 @@ curl -H "Authorization: Bearer $AGENT_API_KEY" \
 curl -N \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"message":"hello","modelID":"<model-id-from-/chat/options>","providerID":"<provider-id-from-/chat/options>","username":"alice"}' \
+  -d '{"message":"hello","modelID":"<model-id-from-/chat/options>","providerID":"<provider-id-from-/chat/options>","stream":true,"username":"alice"}' \
   http://localhost:3000/chat
 ```
 

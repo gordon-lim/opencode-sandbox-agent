@@ -1,6 +1,5 @@
 import {
   createOpencodeClient,
-  type AssistantMessage,
   type Event as OpencodeEvent,
   type Session,
 } from '@opencode-ai/sdk/v2'
@@ -18,6 +17,7 @@ export interface ChatOptions {
   providerID: string
   username?: string
   system?: string
+  stream?: boolean
 }
 
 export interface ChatModelOption {
@@ -38,6 +38,9 @@ export interface ChatOptionsCatalog {
 }
 
 type SessionPromptParams = Parameters<ReturnType<typeof createOpencodeClient>['session']['prompt']>[0]
+type SessionPromptResponseData = Awaited<
+  ReturnType<ReturnType<typeof createOpencodeClient>['session']['prompt']>
+>['data']
 
 export class SandboxPilot {
   readonly client: ReturnType<typeof createOpencodeClient>
@@ -78,12 +81,12 @@ export class SandboxPilot {
     }
   }
 
-  async chat(
+  private buildPromptPayload(
     sessionId: string,
     message: string,
     opts: ChatOptions,
-  ): Promise<AssistantMessage> {
-    const promptPayload = {
+  ): SessionPromptParams {
+    return {
       sessionID: sessionId,
       model: {
         modelID: opts.modelID,
@@ -91,13 +94,43 @@ export class SandboxPilot {
       },
       system: buildSystemPrompt(opts.system, opts.username),
       parts: [{ type: 'text', text: message }],
-    } satisfies SessionPromptParams
+    }
+  }
+
+  async sendPrompt(
+    sessionId: string,
+    message: string,
+    opts: ChatOptions,
+  ): Promise<SessionPromptResponseData> {
+    const promptPayload = this.buildPromptPayload(sessionId, message, opts)
 
     try {
       const result = await this.client.session.prompt(promptPayload, {
         throwOnError: true,
       })
-      return result.data.info
+      return result.data
+    } catch (err) {
+      if (isConnectionError(err)) {
+        throw new OpencodePilotError(
+          `Cannot reach opencode server: ${normalizeError(err).message}`,
+          err,
+        )
+      }
+      throw normalizeError(err)
+    }
+  }
+
+  async sendPromptAsync(
+    sessionId: string,
+    message: string,
+    opts: ChatOptions,
+  ): Promise<void> {
+    const promptPayload = this.buildPromptPayload(sessionId, message, opts)
+
+    try {
+      await this.client.session.promptAsync(promptPayload, {
+        throwOnError: true,
+      })
     } catch (err) {
       if (isConnectionError(err)) {
         throw new OpencodePilotError(
@@ -206,6 +239,48 @@ export class SandboxPilot {
     message: string,
     opts: ChatOptions,
   ): AsyncGenerator<OpencodeEvent> {
+    if (opts.stream === false) {
+      try {
+        const promptResult = await this.sendPrompt(sessionId, message, opts)
+        if (!promptResult) {
+          throw new Error('Prompt response did not include assistant message data')
+        }
+
+        yield {
+          type: 'message.updated',
+          properties: {
+            info: promptResult.info,
+          },
+        }
+        for (const part of promptResult.parts) {
+          yield {
+            type: 'message.part.updated',
+            properties: {
+              part,
+            },
+          }
+        }
+        yield {
+          type: 'session.idle',
+          properties: {
+            sessionID: sessionId,
+          },
+        }
+      } catch (err) {
+        if (err instanceof OpencodePilotError) {
+          throw err
+        }
+        if (isConnectionError(err)) {
+          throw new OpencodePilotError(
+            `Cannot connect to opencode event stream: ${normalizeError(err).message}`,
+            err,
+          )
+        }
+        throw normalizeError(err)
+      }
+      return
+    }
+
     // 1. Subscribe FIRST so we miss no events
     const streamController = new AbortController()
     const stream = await this.subscribe(streamController.signal)
@@ -217,7 +292,7 @@ export class SandboxPilot {
       let pending = stream.next()
 
       // 2. Send the chat message in parallel.
-      const promptPromise = this.chat(sessionId, message, opts).catch((err) => {
+      const promptPromise = this.sendPromptAsync(sessionId, message, opts).catch((err) => {
         promptError = err
         // If prompt fails, stop waiting on the stream.
         streamController.abort()
