@@ -16,6 +16,7 @@ export class OpencodePilotError extends Error {
 export interface ChatOptions {
   modelID: string
   providerID: string
+  username?: string
   system?: string
 }
 
@@ -88,7 +89,7 @@ export class SandboxPilot {
         modelID: opts.modelID,
         providerID: opts.providerID,
       },
-      system: opts.system,
+      system: buildSystemPrompt(opts.system, opts.username),
       parts: [{ type: 'text', text: message }],
     } satisfies SessionPromptParams
 
@@ -262,6 +263,18 @@ export class SandboxPilot {
       streamController.abort()
     }
   }
+}
+
+function buildSystemPrompt(system: string | undefined, username: string | undefined): string | undefined {
+  const base = typeof system === 'string' ? system.trim() : ''
+  const normalizedUsername = typeof username === 'string' ? username.trim() : ''
+
+  if (!normalizedUsername) {
+    return base || undefined
+  }
+
+  const userContext = `Current username: ${normalizedUsername}`
+  return base ? `${base}\n\n${userContext}` : userContext
 }
 
 /**

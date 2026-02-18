@@ -62,6 +62,7 @@ yarn dev
 - `http://localhost:3000` (or your configured `PORT`)
 - Paste `AGENT_API_KEY` into the UI’s "Agent API Key" field and click "Connect"
 - Provider/model dropdowns are loaded from your running opencode server (no hardcoded model list)
+- Optional: set `Username` in the chat form to include user context in each `/chat` request
 - Use the left panel to browse files and the right panel to chat
 
 ## Run Modes
@@ -136,7 +137,7 @@ curl -H "Authorization: Bearer $AGENT_API_KEY" \
 curl -N \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"message":"hello","modelID":"<model-id-from-/chat/options>","providerID":"<provider-id-from-/chat/options>"}' \
+  -d '{"message":"hello","modelID":"<model-id-from-/chat/options>","providerID":"<provider-id-from-/chat/options>","username":"alice"}' \
   http://localhost:3000/chat
 ```
 

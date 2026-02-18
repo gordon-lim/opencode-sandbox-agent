@@ -7,6 +7,7 @@ interface ChatRequestBody {
   message: string
   modelID: string
   providerID: string
+  username?: string
   system?: string
 }
 
@@ -59,6 +60,9 @@ export function chatRoutes() {
     if (!body.providerID || typeof body.providerID !== 'string') {
       return c.json({ error: 'providerID is required and must be a string' }, 400)
     }
+    if (body.username !== undefined && typeof body.username !== 'string') {
+      return c.json({ error: 'username must be a string when provided' }, 400)
+    }
 
     const pilot = new SandboxPilot()
 
@@ -81,6 +85,7 @@ export function chatRoutes() {
         for await (const event of pilot.chatAndStream(sessionId, body.message, {
           modelID: body.modelID,
           providerID: body.providerID,
+          username: body.username,
           system: body.system,
         })) {
           await s.write(sseData({ type: 'event', event }))

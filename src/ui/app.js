@@ -9,6 +9,7 @@ const chatLog = document.getElementById('chatLog')
 const chatForm = document.getElementById('chatForm')
 const modelInput = document.getElementById('modelInput')
 const providerInput = document.getElementById('providerInput')
+const usernameInput = document.getElementById('usernameInput')
 const systemInput = document.getElementById('systemInput')
 const messageInput = document.getElementById('messageInput')
 const sendButton = document.getElementById('sendButton')
@@ -18,6 +19,7 @@ const STORAGE_KEYS = {
   apiKey: 'sandboxed-agent-api-key',
   modelID: 'sandboxed-model-id',
   providerID: 'sandboxed-provider-id',
+  username: 'sandboxed-username',
   systemPrompt: 'sandboxed-system-prompt',
   sessionID: 'sandboxed-session-id',
 }
@@ -215,6 +217,7 @@ async function loadChatOptions(options = {}) {
 }
 
 apiKeyInput.value = localStorage.getItem(STORAGE_KEYS.apiKey) ?? ''
+usernameInput.value = localStorage.getItem(STORAGE_KEYS.username) ?? ''
 systemInput.value = localStorage.getItem(STORAGE_KEYS.systemPrompt) ?? ''
 updateSessionBadge()
 applyFallbackChatOptions()
@@ -902,6 +905,7 @@ async function sendMessage() {
 
   const modelID = modelInput.value.trim()
   const providerID = providerInput.value.trim()
+  const username = usernameInput.value.trim()
   const system = systemInput.value.trim()
 
   if (!modelID || !providerID) {
@@ -918,6 +922,7 @@ async function sendMessage() {
 
   localStorage.setItem(STORAGE_KEYS.modelID, modelID)
   localStorage.setItem(STORAGE_KEYS.providerID, providerID)
+  localStorage.setItem(STORAGE_KEYS.username, username)
   localStorage.setItem(STORAGE_KEYS.systemPrompt, system)
 
   appendChatMessage('user', message)
@@ -931,6 +936,7 @@ async function sendMessage() {
       message,
       modelID,
       providerID,
+      username: username || undefined,
       system: system || undefined,
     }
 
