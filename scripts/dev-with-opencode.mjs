@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
+import { createServer } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -57,6 +58,57 @@ mkdirSync(workspaceRoot, { recursive: true })
 
 const opencodeArgs = ['serve', `--hostname=${hostname}`, `--port=${port}`]
 const appArgs = ['--watch', '--import', 'tsx', 'src/index.ts']
+
+function parsePort(rawPort, fallbackPort) {
+  const parsed = Number.parseInt(String(rawPort ?? ''), 10)
+  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535) {
+    return parsed
+  }
+  return fallbackPort
+}
+
+function canListenOnPort(candidatePort) {
+  return new Promise((resolve, reject) => {
+    const tester = createServer()
+    tester.unref()
+
+    tester.once('error', (error) => {
+      if (error && typeof error === 'object' && 'code' in error) {
+        if (error.code === 'EADDRINUSE' || error.code === 'EACCES') {
+          resolve(false)
+          return
+        }
+      }
+      reject(error)
+    })
+
+    tester.listen(candidatePort, () => {
+      tester.close(() => resolve(true))
+    })
+  })
+}
+
+async function findAvailablePort(startPort, maxAttempts = 100) {
+  let portToTry = startPort
+  const endPort = Math.min(65_535, startPort + maxAttempts - 1)
+
+  while (portToTry <= endPort) {
+    if (await canListenOnPort(portToTry)) {
+      return portToTry
+    }
+    portToTry += 1
+  }
+
+  throw new Error(`Could not find an available app port in range ${startPort}-${endPort}`)
+}
+
+const preferredAppPort = parsePort(childEnv.PORT, 3000)
+const selectedAppPort = await findAvailablePort(preferredAppPort)
+childEnv.PORT = String(selectedAppPort)
+
+if (selectedAppPort !== preferredAppPort) {
+  console.warn(`[dev] app port ${preferredAppPort} is unavailable; using ${selectedAppPort}`)
+}
 
 console.log(`[dev] opencode workspace: ${workspaceRoot}`)
 console.log(`[dev] starting opencode: opencode ${opencodeArgs.join(' ')}`)
