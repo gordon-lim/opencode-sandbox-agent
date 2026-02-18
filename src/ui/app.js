@@ -9,6 +9,7 @@ const chatLog = document.getElementById('chatLog')
 const chatForm = document.getElementById('chatForm')
 const modelInput = document.getElementById('modelInput')
 const providerInput = document.getElementById('providerInput')
+const usernameInput = document.getElementById('usernameInput')
 const systemInput = document.getElementById('systemInput')
 const messageInput = document.getElementById('messageInput')
 const sendButton = document.getElementById('sendButton')
@@ -18,6 +19,7 @@ const STORAGE_KEYS = {
   apiKey: 'sandboxed-agent-api-key',
   modelID: 'sandboxed-model-id',
   providerID: 'sandboxed-provider-id',
+  username: 'sandboxed-username',
   systemPrompt: 'sandboxed-system-prompt',
   sessionID: 'sandboxed-session-id',
 }
@@ -36,6 +38,7 @@ const state = {
   selectedFilePath: '',
   sessionId: localStorage.getItem(STORAGE_KEYS.sessionID) ?? '',
   streaming: false,
+  providerCatalog: new Map(),
   assistantByMessageID: new Map(),
   messageRoles: new Map(),
   userMessageIDs: new Set(),
@@ -62,15 +65,169 @@ function setSelectValueWithFallback(select, value) {
   select.value = value
 }
 
+function normalizeChatOptionsCatalog(payload) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.providers)) {
+    return []
+  }
+
+  const providers = []
+  for (const provider of payload.providers) {
+    const id = typeof provider?.id === 'string' ? provider.id.trim() : ''
+    if (!id) continue
+
+    const name = typeof provider?.name === 'string' && provider.name.trim()
+      ? provider.name.trim()
+      : id
+    const connected = Boolean(provider?.connected)
+    const defaultModelID =
+      typeof provider?.defaultModelID === 'string' && provider.defaultModelID.trim()
+        ? provider.defaultModelID.trim()
+        : ''
+
+    const models = []
+    if (Array.isArray(provider?.models)) {
+      for (const model of provider.models) {
+        const modelID = typeof model?.id === 'string' ? model.id.trim() : ''
+        if (!modelID) continue
+        const modelName =
+          typeof model?.name === 'string' && model.name.trim()
+            ? model.name.trim()
+            : modelID
+        models.push({ id: modelID, name: modelName })
+      }
+    }
+
+    if (models.length === 0) continue
+
+    providers.push({
+      id,
+      name,
+      connected,
+      defaultModelID,
+      models,
+    })
+  }
+
+  return providers
+}
+
+function applyProviderCatalog(providers) {
+  state.providerCatalog = new Map()
+  providerInput.textContent = ''
+
+  for (const provider of providers) {
+    state.providerCatalog.set(provider.id, provider)
+
+    const option = document.createElement('option')
+    option.value = provider.id
+    option.textContent = provider.connected ? provider.id : `${provider.id} (not connected)`
+    providerInput.appendChild(option)
+  }
+
+  if (providers.length === 0) {
+    return
+  }
+
+  const storedProviderID = localStorage.getItem(STORAGE_KEYS.providerID) ?? ''
+  const currentProviderID = providerInput.value.trim()
+  const connectedProviderID = providers.find((provider) => provider.connected)?.id ?? ''
+  const selectedProviderID =
+    providers.some((provider) => provider.id === storedProviderID)
+      ? storedProviderID
+      : providers.some((provider) => provider.id === currentProviderID)
+        ? currentProviderID
+        : connectedProviderID || providers[0].id
+
+  providerInput.value = selectedProviderID
+  renderModelOptionsForProvider(selectedProviderID)
+}
+
+function renderModelOptionsForProvider(providerID, preferredModelID = '') {
+  modelInput.textContent = ''
+
+  const provider = state.providerCatalog.get(providerID)
+  if (!provider) {
+    return
+  }
+
+  for (const model of provider.models) {
+    const option = document.createElement('option')
+    option.value = model.id
+    option.textContent = model.name === model.id ? model.id : `${model.id} (${model.name})`
+    modelInput.appendChild(option)
+  }
+
+  if (provider.models.length === 0) {
+    return
+  }
+
+  const storedModelID = localStorage.getItem(STORAGE_KEYS.modelID) ?? ''
+  const currentModelID = modelInput.value.trim()
+  const desiredModelID = preferredModelID || storedModelID || currentModelID
+
+  const defaultModelID =
+    provider.defaultModelID && provider.models.some((model) => model.id === provider.defaultModelID)
+      ? provider.defaultModelID
+      : ''
+
+  const selectedModelID =
+    provider.models.some((model) => model.id === desiredModelID)
+      ? desiredModelID
+      : defaultModelID || provider.models[0].id
+
+  modelInput.value = selectedModelID
+}
+
+function applyFallbackChatOptions() {
+  if (providerInput.options.length === 0) {
+    setSelectValueWithFallback(providerInput, localStorage.getItem(STORAGE_KEYS.providerID) ?? 'openai')
+  }
+  if (modelInput.options.length === 0) {
+    setSelectValueWithFallback(modelInput, localStorage.getItem(STORAGE_KEYS.modelID) ?? 'gpt-4o')
+  }
+}
+
+async function loadChatOptions(options = {}) {
+  if (!hasApiKey()) {
+    return
+  }
+
+  const silent = Boolean(options.silent)
+
+  try {
+    const response = await authedFetch('/chat/options')
+    if (!response.ok) {
+      throw new Error(await readErrorMessage(response))
+    }
+
+    const payload = await response.json()
+    const providers = normalizeChatOptionsCatalog(payload)
+    if (providers.length === 0) {
+      throw new Error('No models available from opencode server.')
+    }
+
+    applyProviderCatalog(providers)
+  } catch (error) {
+    applyFallbackChatOptions()
+    if (!silent) {
+      const message = error instanceof Error ? error.message : 'Failed to load provider/model options.'
+      appendChatMessage('system', `Model options refresh failed: ${message}`)
+    }
+  }
+}
+
 apiKeyInput.value = localStorage.getItem(STORAGE_KEYS.apiKey) ?? ''
-setSelectValueWithFallback(modelInput, localStorage.getItem(STORAGE_KEYS.modelID) ?? 'gpt-4.1')
-setSelectValueWithFallback(providerInput, localStorage.getItem(STORAGE_KEYS.providerID) ?? 'openai')
+usernameInput.value = localStorage.getItem(STORAGE_KEYS.username) ?? ''
 systemInput.value = localStorage.getItem(STORAGE_KEYS.systemPrompt) ?? ''
 updateSessionBadge()
+applyFallbackChatOptions()
 
 connectButton.addEventListener('click', async () => {
   localStorage.setItem(STORAGE_KEYS.apiKey, apiKeyInput.value.trim())
-  await loadWorkspace()
+  await Promise.all([
+    loadWorkspace(),
+    loadChatOptions(),
+  ])
   if (hasApiKey()) {
     startWorkspaceAutoRefresh()
   }
@@ -83,9 +240,15 @@ refreshWorkspaceButton.addEventListener('click', async () => {
 apiKeyInput.addEventListener('input', () => {
   if (hasApiKey()) {
     startWorkspaceAutoRefresh()
+    void loadChatOptions({ silent: true })
     return
   }
   stopWorkspaceAutoRefresh()
+})
+
+providerInput.addEventListener('change', () => {
+  const providerID = providerInput.value.trim()
+  renderModelOptionsForProvider(providerID, '')
 })
 
 chatForm.addEventListener('submit', async (event) => {
@@ -104,6 +267,7 @@ messageInput.addEventListener('keydown', (event) => {
 
 if (apiKeyInput.value.trim()) {
   void loadWorkspace()
+  void loadChatOptions({ silent: true })
   startWorkspaceAutoRefresh()
 }
 
@@ -673,6 +837,7 @@ async function sendMessage() {
 
   const modelID = modelInput.value.trim()
   const providerID = providerInput.value.trim()
+  const username = usernameInput.value.trim()
   const system = systemInput.value.trim()
 
   if (!modelID || !providerID) {
@@ -689,6 +854,7 @@ async function sendMessage() {
 
   localStorage.setItem(STORAGE_KEYS.modelID, modelID)
   localStorage.setItem(STORAGE_KEYS.providerID, providerID)
+  localStorage.setItem(STORAGE_KEYS.username, username)
   localStorage.setItem(STORAGE_KEYS.systemPrompt, system)
 
   appendChatMessage('user', message)
@@ -702,6 +868,7 @@ async function sendMessage() {
       message,
       modelID,
       providerID,
+      username: username || undefined,
       system: system || undefined,
     }
 

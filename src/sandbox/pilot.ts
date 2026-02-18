@@ -15,7 +15,25 @@ export class OpencodePilotError extends Error {
 export interface ChatOptions {
   modelID: string
   providerID: string
+  username?: string
   system?: string
+}
+
+export interface ChatModelOption {
+  id: string
+  name: string
+}
+
+export interface ChatProviderOption {
+  id: string
+  name: string
+  connected: boolean
+  defaultModelID?: string
+  models: ChatModelOption[]
+}
+
+export interface ChatOptionsCatalog {
+  providers: ChatProviderOption[]
 }
 
 export class SandboxPilot {
@@ -63,7 +81,7 @@ export class SandboxPilot {
       return await this.client.session.chat(sessionId, {
         modelID: opts.modelID,
         providerID: opts.providerID,
-        system: opts.system,
+        system: buildSystemPrompt(opts.system, opts.username),
         parts: [{ type: 'text', text: message }],
       })
     } catch (err) {
@@ -84,6 +102,82 @@ export class SandboxPilot {
       if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
         throw new OpencodePilotError(
           `Cannot connect to opencode event stream: ${(err as Error).message}`,
+          err,
+        )
+      }
+      throw err
+    }
+  }
+
+  async listChatOptions(): Promise<ChatOptionsCatalog> {
+    try {
+      const result = await this.client.app.providers()
+      const defaults =
+        result.default && typeof result.default === 'object'
+          ? (result.default as Record<string, unknown>)
+          : {}
+      const providersRaw = Array.isArray(result.providers) ? result.providers : []
+
+      const providers: ChatProviderOption[] = []
+
+      for (const provider of providersRaw) {
+        const providerID = typeof provider.id === 'string' ? provider.id.trim() : ''
+        if (!providerID) {
+          continue
+        }
+
+        const providerName =
+          typeof provider.name === 'string' && provider.name.trim()
+            ? provider.name.trim()
+            : providerID
+
+        const modelEntries =
+          provider.models && typeof provider.models === 'object'
+            ? Object.entries(provider.models)
+            : []
+
+        const models: ChatModelOption[] = modelEntries
+          .map(([modelID, modelValue]) => {
+            const modelName =
+              modelValue && typeof modelValue === 'object' && 'name' in modelValue
+                ? (modelValue as { name?: unknown }).name
+                : undefined
+
+            return {
+              id: modelID,
+              name:
+                typeof modelName === 'string' && modelName.trim()
+                  ? modelName.trim()
+                  : modelID,
+            }
+          })
+          .sort((a, b) => a.id.localeCompare(b.id))
+
+        if (models.length === 0) {
+          continue
+        }
+
+        const defaultModelID = defaults[providerID]
+        const item: ChatProviderOption = {
+          id: providerID,
+          name: providerName,
+          connected: true,
+          models,
+        }
+
+        if (typeof defaultModelID === 'string' && defaultModelID.trim()) {
+          item.defaultModelID = defaultModelID
+        }
+
+        providers.push(item)
+      }
+
+      providers.sort((a, b) => a.id.localeCompare(b.id))
+      return { providers }
+    } catch (err) {
+      if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
+        throw new OpencodePilotError(
+          `Cannot reach opencode server: ${(err as Error).message}`,
           err,
         )
       }
@@ -120,6 +214,18 @@ export class SandboxPilot {
       stream.controller.abort()
     }
   }
+}
+
+function buildSystemPrompt(system: string | undefined, username: string | undefined): string | undefined {
+  const base = typeof system === 'string' ? system.trim() : ''
+  const normalizedUsername = typeof username === 'string' ? username.trim() : ''
+
+  if (!normalizedUsername) {
+    return base || undefined
+  }
+
+  const userContext = `Current username: ${normalizedUsername}`
+  return base ? `${base}\n\n${userContext}` : userContext
 }
 
 /**
