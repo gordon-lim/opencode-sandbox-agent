@@ -1,0 +1,22 @@
+{
+  "name": "sandboxed-coding-agent",
+  "version": "1.0.0",
+  "packageManager": "yarn@1.22.22",
+  "type": "module",
+  "scripts": {
+    "start": "node --import tsx src/index.ts",
+    "dev": "node scripts/dev-with-opencode.mjs",
+    "dev:app": "node --watch --import tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.6",
+    "hono": "^4.10.7",
+    "@opencode-ai/sdk": "file:../opencode-sdk-js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.6",
+    "tsx": "^4.20.5",
+    "typescript": "^5.8.3"
+  }
+}

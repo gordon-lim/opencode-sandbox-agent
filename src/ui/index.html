@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sandbox Workspace Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar panel">
+        <div class="brand-block">
+          <p class="eyebrow">Sandbox Control Surface</p>
+          <h1>Workspace + Chat</h1>
+          <p class="subtle-copy">Browse files in the sandbox and send messages to your `/chat` endpoint.</p>
+        </div>
+        <div class="connect-block">
+          <label for="apiKeyInput">Agent API Key</label>
+          <div class="connect-row">
+            <input id="apiKeyInput" type="password" placeholder="Paste bearer token" autocomplete="off" />
+            <button id="connectButton" type="button">Connect</button>
+          </div>
+          <p id="connectionStatus" class="status status-neutral">Enter API key and connect.</p>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="workspace panel">
+          <div class="panel-head">
+            <h2>Sandboxed Workspace</h2>
+            <button id="refreshWorkspaceButton" type="button">Refresh</button>
+          </div>
+          <div class="workspace-grid">
+            <aside class="tree-pane">
+              <p class="pane-title">Files</p>
+              <div id="workspaceTree" class="tree-scroll"></div>
+            </aside>
+            <article class="file-pane">
+              <p id="fileMeta" class="pane-title">Select a file to preview.</p>
+              <pre id="fileContent" class="file-content"></pre>
+            </article>
+          </div>
+        </section>
+
+        <aside class="chat panel">
+          <div class="panel-head">
+            <h2>Chat</h2>
+            <span id="sessionBadge" class="session-badge">Session: not started</span>
+          </div>
+          <div id="chatLog" class="chat-log"></div>
+          <form id="chatForm" class="chat-form">
+            <label for="modelInput">Model ID</label>
+            <select id="modelInput" required>
+              <optgroup label="OpenAI">
+                <option value="gpt-4.1">gpt-4.1</option>
+                <option value="gpt-4o">gpt-4o</option>
+                <option value="gpt-4o-mini">gpt-4o-mini</option>
+                <option value="o3-mini">o3-mini</option>
+              </optgroup>
+              <optgroup label="Anthropic">
+                <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+                <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
+                <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
+              </optgroup>
+              <optgroup label="Google">
+                <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+              </optgroup>
+              <optgroup label="Other">
+                <option value="llama-3.1-70b">llama-3.1-70b</option>
+              </optgroup>
+            </select>
+
+            <label for="providerInput">Provider ID</label>
+            <select id="providerInput" required>
+              <option value="openai">openai</option>
+              <option value="anthropic">anthropic</option>
+              <option value="google">google</option>
+              <option value="openrouter">openrouter</option>
+              <option value="groq">groq</option>
+              <option value="mistral">mistral</option>
+              <option value="xai">xai</option>
+              <option value="deepseek">deepseek</option>
+              <option value="opencode">opencode</option>
+            </select>
+
+            <label for="systemInput">System Prompt (optional)</label>
+            <textarea id="systemInput" rows="2" placeholder="You are a helpful assistant."></textarea>
+
+            <label for="messageInput">Message</label>
+            <textarea id="messageInput" rows="4" placeholder="Type your prompt..." required></textarea>
+
+            <button id="sendButton" type="submit">Send</button>
+          </form>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

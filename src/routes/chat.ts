@@ -1,0 +1,86 @@
+import { Hono } from 'hono'
+import { stream } from 'hono/streaming'
+import { SandboxPilot, OpencodePilotError } from '../sandbox/pilot'
+
+interface ChatRequestBody {
+  sessionId?: string
+  message: string
+  modelID: string
+  providerID: string
+  system?: string
+}
+
+type SSEEnvelope =
+  | { type: 'session.created'; sessionId: string }
+  | { type: 'event'; event: unknown }
+  | { type: 'done' }
+  | { type: 'error'; message: string; code: string }
+
+function sseData(envelope: SSEEnvelope): string {
+  return `data: ${JSON.stringify(envelope)}\n\n`
+}
+
+export function chatRoutes() {
+  const router = new Hono()
+
+  router.post('/chat', async (c) => {
+    let body: ChatRequestBody
+
+    try {
+      body = await c.req.json<ChatRequestBody>()
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+
+    if (!body.message || typeof body.message !== 'string') {
+      return c.json({ error: 'message is required and must be a string' }, 400)
+    }
+    if (!body.modelID || typeof body.modelID !== 'string') {
+      return c.json({ error: 'modelID is required and must be a string' }, 400)
+    }
+    if (!body.providerID || typeof body.providerID !== 'string') {
+      return c.json({ error: 'providerID is required and must be a string' }, 400)
+    }
+
+    const pilot = new SandboxPilot()
+
+    return stream(c, async (s) => {
+      c.header('Content-Type', 'text/event-stream')
+      c.header('Cache-Control', 'no-cache')
+      c.header('X-Accel-Buffering', 'no')
+
+      try {
+        let sessionId: string
+
+        if (body.sessionId) {
+          sessionId = body.sessionId
+        } else {
+          const session = await pilot.createSession()
+          sessionId = session.id
+          await s.write(sseData({ type: 'session.created', sessionId }))
+        }
+
+        for await (const event of pilot.chatAndStream(sessionId, body.message, {
+          modelID: body.modelID,
+          providerID: body.providerID,
+          system: body.system,
+        })) {
+          await s.write(sseData({ type: 'event', event }))
+        }
+
+        await s.write(sseData({ type: 'done' }))
+      } catch (err) {
+        if (err instanceof OpencodePilotError) {
+          await s.write(
+            sseData({ type: 'error', message: err.message, code: 'OPENCODE_UNREACHABLE' }),
+          )
+        } else {
+          const message = err instanceof Error ? err.message : 'Unexpected error'
+          await s.write(sseData({ type: 'error', message, code: 'INTERNAL_ERROR' }))
+        }
+      }
+    })
+  })
+
+  return router
+}
