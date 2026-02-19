@@ -1,5 +1,5 @@
 import Opencode from '@opencode-ai/sdk'
-import type { Session, AssistantMessage, SessionMessagesResponse } from '@opencode-ai/sdk/resources/session'
+import type { Session, AssistantMessage } from '@opencode-ai/sdk/resources/session'
 import type { EventListResponse } from '@opencode-ai/sdk/resources/event'
 import type { Stream } from '@opencode-ai/sdk/core/streaming'
 import { APIConnectionError, APIConnectionTimeoutError } from '@opencode-ai/sdk/core/error'
@@ -192,40 +192,39 @@ export class SandboxPilot {
     opts: ChatOptions,
   ): AsyncGenerator<EventListResponse> {
     if (opts.stream === false) {
-      const assistant = await this.chat(sessionId, message, opts)
-      const parts = await this.getMessagePartsWithRetry(sessionId, assistant.id)
+      const stream = await this.subscribe()
+      const bufferedEvents: EventListResponse[] = []
+      let reachedTerminal = false
 
-      yield {
-        type: 'message.updated',
-        properties: {
-          info: assistant,
-        },
-      }
+      try {
+        await this.chat(sessionId, message, opts)
 
-      for (const part of parts) {
-        yield {
-          type: 'message.part.updated',
-          properties: {
-            part,
-          },
+        for await (const event of stream) {
+          const relevant = isEventForSession(event, sessionId)
+          if (!relevant) continue
+
+          bufferedEvents.push(event)
+
+          if (event.type === 'session.idle' || event.type === 'session.error') {
+            reachedTerminal = true
+            break
+          }
         }
+      } finally {
+        stream.controller.abort()
       }
 
-      if (parts.length === 0 && assistant.error) {
-        yield {
-          type: 'session.error',
+      if (!reachedTerminal) {
+        bufferedEvents.push({
+          type: 'session.idle',
           properties: {
             sessionID: sessionId,
-            error: assistant.error,
           },
-        }
+        })
       }
 
-      yield {
-        type: 'session.idle',
-        properties: {
-          sessionID: sessionId,
-        },
+      for (const event of bufferedEvents) {
+        yield event
       }
       return
     }
@@ -254,41 +253,6 @@ export class SandboxPilot {
       stream.controller.abort()
     }
   }
-
-  private async getMessagePartsWithRetry(
-    sessionId: string,
-    messageId: string,
-    maxAttempts = 25,
-  ): Promise<SessionMessagesResponse[number]['parts']> {
-    let latestKnownParts: SessionMessagesResponse[number]['parts'] | undefined
-
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try {
-        const messages = await this.client.session.messages(sessionId)
-        const found = messages.find((item) => item?.info?.id === messageId)
-        if (found && Array.isArray(found.parts)) {
-          latestKnownParts = found.parts
-          if (found.parts.length > 0) {
-            return found.parts
-          }
-        }
-      } catch (err) {
-        if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
-          throw new OpencodePilotError(
-            `Cannot reach opencode server: ${(err as Error).message}`,
-            err,
-          )
-        }
-        throw err
-      }
-
-      if (attempt < maxAttempts - 1) {
-        await sleep(Math.min(120 + attempt * 40, 420))
-      }
-    }
-
-    return latestKnownParts ?? []
-  }
 }
 
 function buildSystemPrompt(system: string | undefined, username: string | undefined): string | undefined {
@@ -301,12 +265,6 @@ function buildSystemPrompt(system: string | undefined, username: string | undefi
 
   const userContext = `Current username: ${normalizedUsername}`
   return base ? `${base}\n\n${userContext}` : userContext
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
 }
 
 /**
