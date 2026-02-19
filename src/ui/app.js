@@ -685,6 +685,16 @@ function upsertAssistantText(messageID, partID, text) {
   chatLog.scrollTop = chatLog.scrollHeight
 }
 
+function appendAssistantTextDelta(messageID, partID, delta) {
+  const entry = getOrCreateAssistantEntry(messageID)
+  const prior = entry.parts.get(partID) ?? ''
+  entry.parts.set(partID, `${prior}${delta}`)
+  const content = Array.from(entry.parts.values()).join('')
+  entry.messageElement.textContent = content
+  entry.messageElement.hidden = content.length === 0
+  chatLog.scrollTop = chatLog.scrollHeight
+}
+
 function handleStreamEvent(event) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return
@@ -775,29 +785,35 @@ function handleStreamEvent(event) {
 
 function handleEnvelope(envelope) {
   if (!envelope || typeof envelope !== 'object' || typeof envelope.type !== 'string') {
-    return
+    return false
   }
 
   if (envelope.type === 'session.created' && typeof envelope.sessionId === 'string') {
     state.sessionId = envelope.sessionId
     localStorage.setItem(STORAGE_KEYS.sessionID, state.sessionId)
     updateSessionBadge()
-    return
+    return false
   }
 
   if (envelope.type === 'event') {
     handleStreamEvent(envelope.event)
-    return
+    return false
   }
 
   if (envelope.type === 'error') {
     appendChatMessage('system', envelope.message || 'Request failed.')
-    return
+    return true
   }
+
+  if (envelope.type === 'done') {
+    return true
+  }
+
+  return false
 }
 
 function processSSEBlock(block) {
-  if (!block) return
+  if (!block) return false
 
   const dataLines = []
   for (const line of block.split('\n')) {
@@ -807,14 +823,15 @@ function processSSEBlock(block) {
   }
 
   if (dataLines.length === 0) {
-    return
+    return false
   }
 
   try {
     const envelope = JSON.parse(dataLines.join('\n'))
-    handleEnvelope(envelope)
+    return handleEnvelope(envelope)
   } catch {
     appendChatMessage('system', 'Received malformed stream data.')
+    return false
   }
 }
 
@@ -836,12 +853,17 @@ async function streamChatResponse(response) {
     buffer = blocks.pop() ?? ''
 
     for (const block of blocks) {
-      processSSEBlock(block)
+      if (processSSEBlock(block)) {
+        await reader.cancel()
+        return
+      }
     }
   }
 
   if (buffer.trim()) {
-    processSSEBlock(buffer)
+    if (processSSEBlock(buffer)) {
+      await reader.cancel()
+    }
   }
 }
 

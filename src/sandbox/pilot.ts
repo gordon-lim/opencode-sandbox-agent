@@ -39,9 +39,9 @@ export interface ChatOptionsCatalog {
 }
 
 type SessionPromptParams = Parameters<ReturnType<typeof createOpencodeClient>['session']['prompt']>[0]
-type SessionPromptResponseData = Awaited<
-  ReturnType<ReturnType<typeof createOpencodeClient>['session']['prompt']>
->['data']
+type SessionPromptResponseData = NonNullable<
+  Awaited<ReturnType<ReturnType<typeof createOpencodeClient>['session']['prompt']>>['data']
+>
 
 export class SandboxPilot {
   readonly client: ReturnType<typeof createOpencodeClient>
@@ -254,6 +254,11 @@ export class SandboxPilot {
         if (!promptResult) {
           throw new Error('Prompt response did not include assistant message data')
         }
+        const promptParts = await this.getPromptPartsWithRetry(
+          sessionId,
+          promptResult.info.id,
+          promptResult.parts,
+        )
 
         yield {
           type: 'message.updated',
@@ -261,7 +266,7 @@ export class SandboxPilot {
             info: promptResult.info,
           },
         }
-        for (const part of promptResult.parts) {
+        for (const part of promptParts) {
           yield {
             type: 'message.part.updated',
             properties: {
@@ -295,7 +300,6 @@ export class SandboxPilot {
     const stream = await this.subscribe(streamController.signal)
     let promptError: unknown
     const requestMessageID = createRequestMessageID()
-    const assistantMessageIDs = new Set<string>()
     let sawRequestActivity = false
     let promptSettled = false
 
@@ -340,21 +344,15 @@ export class SandboxPilot {
           }
           if (info.role === 'assistant' && info.parentID === requestMessageID) {
             sawRequestActivity = true
-            assistantMessageIDs.add(info.id)
-          }
-          if (info.role === 'assistant' && promptSettled) {
-            sawRequestActivity = true
-            assistantMessageIDs.add(info.id)
           }
         } else if (event.type === 'message.part.updated') {
-          const partMessageID = event.properties.part.messageID
           sawRequestActivity = true
-          assistantMessageIDs.add(partMessageID)
         } else if (event.type === 'message.part.removed') {
-          const partMessageID = event.properties.messageID
           sawRequestActivity = true
-          assistantMessageIDs.add(partMessageID)
-        } else if (event.type === 'session.status' && event.properties.status.type === 'busy') {
+        } else if (
+          event.type === 'session.status' &&
+          (event.properties.status.type === 'busy' || event.properties.status.type === 'retry')
+        ) {
           sawRequestActivity = true
         }
 
@@ -370,6 +368,15 @@ export class SandboxPilot {
         if (event.type === 'session.error') {
           // Ignore stale errors that predate the current prompt.
           if (!promptSettled) {
+            continue
+          }
+          yield event
+          break
+        }
+
+        if (event.type === 'session.status' && event.properties.status.type === 'idle') {
+          // Some runtimes emit session.status(idle) without session.idle.
+          if (!(promptSettled && sawRequestActivity)) {
             continue
           }
           yield event
@@ -399,6 +406,53 @@ export class SandboxPilot {
       // Always abort the underlying HTTP stream.
       streamController.abort()
     }
+  }
+
+  private async getPromptPartsWithRetry(
+    sessionId: string,
+    messageID: string,
+    initialParts: SessionPromptResponseData['parts'],
+    maxAttempts = 12,
+  ): Promise<SessionPromptResponseData['parts']> {
+    if (Array.isArray(initialParts) && initialParts.length > 0) {
+      return initialParts
+    }
+
+    let latestParts: SessionPromptResponseData['parts'] = Array.isArray(initialParts)
+      ? initialParts
+      : []
+    let lastError: unknown
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const result = await this.client.session.message({
+          path: { id: sessionId, messageID },
+          throwOnError: true,
+        })
+        const parts = Array.isArray(result.data.parts) ? result.data.parts : []
+        latestParts = parts
+        if (parts.length > 0) {
+          return parts
+        }
+      } catch (err) {
+        if (isConnectionError(err)) {
+          throw new OpencodePilotError(
+            `Cannot reach opencode server: ${normalizeError(err).message}`,
+            err,
+          )
+        }
+        lastError = err
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await sleep(Math.min(120 + attempt * 40, 500))
+      }
+    }
+
+    if (latestParts.length === 0 && lastError) {
+      throw normalizeError(lastError)
+    }
+    return latestParts
   }
 }
 
@@ -430,8 +484,14 @@ async function awaitNextWithTimeout<T>(
   ])
 }
 
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
 /**
- * Returns true if the event belongs to (or should pass through for) the given sessionId.
+ * Returns true if the event belongs to the given sessionId.
  */
 function isEventForSession(event: OpencodeEvent, sessionId: string): boolean {
   switch (event.type) {
@@ -466,7 +526,7 @@ function isEventForSession(event: OpencodeEvent, sessionId: string): boolean {
     case 'message.part.updated':
       return event.properties.part.sessionID === sessionId
 
-    // Pass-through events — global agent activity, always include.
+    // Ignore global pass-through events to keep one /chat request bounded.
     case 'file.edited':
     case 'installation.updated':
     case 'installation.update-available':
@@ -483,7 +543,7 @@ function isEventForSession(event: OpencodeEvent, sessionId: string): boolean {
     case 'pty.deleted':
     case 'server.instance.disposed':
     case 'server.connected':
-      return true
+      return false
 
     default:
       return false

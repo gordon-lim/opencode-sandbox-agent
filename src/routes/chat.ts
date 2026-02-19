@@ -95,8 +95,6 @@ export function chatRoutes() {
         })) {
           await s.write(sseData({ type: 'event', event }))
         }
-
-        await s.write(sseData({ type: 'done' }))
       } catch (err) {
         if (err instanceof OpencodePilotError) {
           await s.write(
@@ -105,6 +103,12 @@ export function chatRoutes() {
         } else {
           const message = err instanceof Error ? err.message : 'Unexpected error'
           await s.write(sseData({ type: 'error', message, code: 'INTERNAL_ERROR' }))
+        }
+      } finally {
+        try {
+          await s.write(sseData({ type: 'done' }))
+        } catch {
+          // No-op: client may have disconnected before terminal envelope flush.
         }
       }
     })
