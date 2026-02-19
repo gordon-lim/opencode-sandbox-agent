@@ -62,6 +62,9 @@ yarn dev
 - `http://localhost:3000` (or your configured `PORT`)
 - Paste `AGENT_API_KEY` into the UI’s "Agent API Key" field and click "Connect"
 - Provider/model dropdowns are loaded from your running opencode server (no hardcoded model list)
+- Stream toggle controls response mode:
+  - On: event streaming mode
+  - Off: waits for full assistant response, then emits complete parts
 - Optional: set `Username` in the chat form to include user context in each `/chat` request
 - Use the left panel to browse files and the right panel to chat
 
@@ -136,7 +139,7 @@ curl -H "Authorization: Bearer $AGENT_API_KEY" \
 curl -N \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"message":"hello","modelID":"<model-id-from-/chat/options>","providerID":"<provider-id-from-/chat/options>","username":"alice"}' \
+  -d '{"message":"hello","modelID":"<model-id-from-/chat/options>","providerID":"<provider-id-from-/chat/options>","stream":true,"username":"alice"}' \
   http://localhost:3000/chat
 ```
 

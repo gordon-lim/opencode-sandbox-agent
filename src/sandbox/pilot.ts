@@ -1,5 +1,5 @@
 import Opencode from '@opencode-ai/sdk'
-import type { Session, AssistantMessage } from '@opencode-ai/sdk/resources/session'
+import type { Session, AssistantMessage, SessionMessagesResponse } from '@opencode-ai/sdk/resources/session'
 import type { EventListResponse } from '@opencode-ai/sdk/resources/event'
 import type { Stream } from '@opencode-ai/sdk/core/streaming'
 import { APIConnectionError, APIConnectionTimeoutError } from '@opencode-ai/sdk/core/error'
@@ -15,6 +15,7 @@ export class OpencodePilotError extends Error {
 export interface ChatOptions {
   modelID: string
   providerID: string
+  stream?: boolean
   username?: string
   system?: string
 }
@@ -190,6 +191,35 @@ export class SandboxPilot {
     message: string,
     opts: ChatOptions,
   ): AsyncGenerator<EventListResponse> {
+    if (opts.stream === false) {
+      const assistant = await this.chat(sessionId, message, opts)
+      const parts = await this.getMessagePartsWithRetry(sessionId, assistant.id)
+
+      yield {
+        type: 'message.updated',
+        properties: {
+          info: assistant,
+        },
+      }
+
+      for (const part of parts) {
+        yield {
+          type: 'message.part.updated',
+          properties: {
+            part,
+          },
+        }
+      }
+
+      yield {
+        type: 'session.idle',
+        properties: {
+          sessionID: sessionId,
+        },
+      }
+      return
+    }
+
     // 1. Subscribe FIRST so we miss no events
     const stream = await this.subscribe()
 
@@ -214,6 +244,36 @@ export class SandboxPilot {
       stream.controller.abort()
     }
   }
+
+  private async getMessagePartsWithRetry(
+    sessionId: string,
+    messageId: string,
+    maxAttempts = 5,
+  ): Promise<SessionMessagesResponse[number]['parts']> {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const messages = await this.client.session.messages(sessionId)
+        const found = messages.find((item) => item?.info?.id === messageId)
+        if (found && Array.isArray(found.parts)) {
+          return found.parts
+        }
+      } catch (err) {
+        if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
+          throw new OpencodePilotError(
+            `Cannot reach opencode server: ${(err as Error).message}`,
+            err,
+          )
+        }
+        throw err
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await sleep(120)
+      }
+    }
+
+    return []
+  }
 }
 
 function buildSystemPrompt(system: string | undefined, username: string | undefined): string | undefined {
@@ -226,6 +286,12 @@ function buildSystemPrompt(system: string | undefined, username: string | undefi
 
   const userContext = `Current username: ${normalizedUsername}`
   return base ? `${base}\n\n${userContext}` : userContext
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
 }
 
 /**

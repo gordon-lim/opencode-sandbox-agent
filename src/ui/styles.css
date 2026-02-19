@@ -368,6 +368,28 @@ button:disabled {
   color: var(--text-muted);
 }
 
+.stream-toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: fit-content;
+  cursor: pointer;
+}
+
+.stream-toggle-row input {
+  width: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+  box-shadow: none;
+}
+
+.stream-toggle-row span {
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;
