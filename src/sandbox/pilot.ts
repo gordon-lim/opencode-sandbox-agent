@@ -211,6 +211,16 @@ export class SandboxPilot {
         }
       }
 
+      if (parts.length === 0 && assistant.error) {
+        yield {
+          type: 'session.error',
+          properties: {
+            sessionID: sessionId,
+            error: assistant.error,
+          },
+        }
+      }
+
       yield {
         type: 'session.idle',
         properties: {
@@ -248,14 +258,19 @@ export class SandboxPilot {
   private async getMessagePartsWithRetry(
     sessionId: string,
     messageId: string,
-    maxAttempts = 5,
+    maxAttempts = 25,
   ): Promise<SessionMessagesResponse[number]['parts']> {
+    let latestKnownParts: SessionMessagesResponse[number]['parts'] | undefined
+
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const messages = await this.client.session.messages(sessionId)
         const found = messages.find((item) => item?.info?.id === messageId)
         if (found && Array.isArray(found.parts)) {
-          return found.parts
+          latestKnownParts = found.parts
+          if (found.parts.length > 0) {
+            return found.parts
+          }
         }
       } catch (err) {
         if (err instanceof APIConnectionError || err instanceof APIConnectionTimeoutError) {
@@ -268,11 +283,11 @@ export class SandboxPilot {
       }
 
       if (attempt < maxAttempts - 1) {
-        await sleep(120)
+        await sleep(Math.min(120 + attempt * 40, 420))
       }
     }
 
-    return []
+    return latestKnownParts ?? []
   }
 }
 
