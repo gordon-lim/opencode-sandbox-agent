@@ -1,6 +1,5 @@
 import {
   createOpencodeClient,
-  type AssistantMessage,
   type Event as OpencodeEvent,
   type Session,
 } from '@opencode-ai/sdk'
@@ -155,6 +154,41 @@ export class SandboxPilot {
     }
   }
 
+  async sendPromptAsync(
+    sessionId: string,
+    message: string,
+    opts: ChatOptions,
+  ): Promise<void> {
+    const promptPayload = this.buildPromptPayload(sessionId, message, opts)
+    console.log('[pilot] --> session.promptAsync', {
+      sessionId,
+      modelID: opts.modelID,
+      providerID: opts.providerID,
+      messageLength: message.length,
+    })
+
+    try {
+      await this.client.session.promptAsync({
+        ...promptPayload,
+        throwOnError: true,
+      })
+      console.log('[pilot] <-- session.promptAsync (accepted)')
+    } catch (err) {
+      if (isConnectionError(err)) {
+        throw new OpencodePilotError(
+          `Cannot reach opencode server: ${normalizeError(err).message}`,
+          err,
+        )
+      }
+      throw normalizeError(err)
+    }
+  }
+
+  async subscribe(signal: AbortSignal): Promise<AsyncGenerator<OpencodeEvent>> {
+    const result = await this.client.event.subscribe({ signal })
+    return result.stream
+  }
+
   async listChatOptions(): Promise<ChatOptionsCatalog> {
     console.log('[pilot] --> provider.list')
     try {
@@ -247,119 +281,151 @@ export class SandboxPilot {
     message: string,
     opts: ChatOptions,
   ): AsyncGenerator<OpencodeEvent> {
-    try {
-      const promptResult = await this.sendPrompt(sessionId, message, opts)
-      if (!promptResult) {
-        throw new Error('Prompt response did not include assistant message data')
-      }
-      const promptParts = await this.getPromptPartsWithRetry(
-        sessionId,
-        promptResult.info.id,
-        promptResult.parts,
-      )
+    if (opts.stream === false) {
+      try {
+        const promptResult = await this.sendPrompt(sessionId, message, opts)
+        if (!promptResult) {
+          throw new Error('Prompt response did not include assistant message data')
+        }
 
-      yield {
-        type: 'message.updated',
-        properties: {
-          info: promptResult.info,
-        },
-      }
-
-      const preferDeltas = opts.stream !== false
-      for (const part of promptParts) {
-        if (!(preferDeltas && part.type === 'text' && part.text)) {
+        yield {
+          type: 'message.updated',
+          properties: {
+            info: promptResult.info,
+          },
+        }
+        for (const part of promptResult.parts) {
           yield {
             type: 'message.part.updated',
             properties: {
               part,
             },
           }
-          continue
         }
-
-        let textSoFar = ''
-        for (const delta of splitTextIntoDeltas(part.text)) {
-          textSoFar += delta
-          yield {
-            type: 'message.part.updated',
-            properties: {
-              part: {
-                ...part,
-                text: textSoFar,
-              },
-              delta,
-            },
-          }
-        }
-      }
-
-      yield {
-        type: 'session.idle',
-        properties: {
-          sessionID: sessionId,
-        },
-      }
-    } catch (err) {
-      if (err instanceof OpencodePilotError) {
-        throw err
-      }
-      if (isConnectionError(err)) {
-        throw new OpencodePilotError(
-          `Cannot connect to opencode event stream: ${normalizeError(err).message}`,
-          err,
-        )
-      }
-      throw normalizeError(err)
-    }
-  }
-
-  private async getPromptPartsWithRetry(
-    sessionId: string,
-    messageID: string,
-    initialParts: SessionPromptResponseData['parts'],
-    maxAttempts = 12,
-  ): Promise<SessionPromptResponseData['parts']> {
-    if (Array.isArray(initialParts) && initialParts.length > 0) {
-      return initialParts
-    }
-
-    let latestParts: SessionPromptResponseData['parts'] = Array.isArray(initialParts)
-      ? initialParts
-      : []
-    let lastError: unknown
-
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try {
-        console.log('[pilot] --> session.message', { sessionId, messageID, attempt: attempt + 1 })
-        const result = await this.client.session.message({
-          path: { id: sessionId, messageID },
-          throwOnError: true,
-        })
-        const parts = Array.isArray(result.data.parts) ? result.data.parts : []
-        console.log('[pilot] <-- session.message', { partCount: parts.length })
-        latestParts = parts
-        if (parts.length > 0) {
-          return parts
+        yield {
+          type: 'session.idle',
+          properties: {
+            sessionID: sessionId,
+          },
         }
       } catch (err) {
+        if (err instanceof OpencodePilotError) {
+          throw err
+        }
         if (isConnectionError(err)) {
           throw new OpencodePilotError(
-            `Cannot reach opencode server: ${normalizeError(err).message}`,
+            `Cannot connect to opencode event stream: ${normalizeError(err).message}`,
             err,
           )
         }
-        lastError = err
+        throw normalizeError(err)
       }
-
-      if (attempt < maxAttempts - 1) {
-        await sleep(Math.min(120 + attempt * 40, 500))
-      }
+      return
     }
 
-    if (latestParts.length === 0 && lastError) {
-      throw normalizeError(lastError)
+    const streamController = new AbortController()
+    const stream = await this.subscribe(streamController.signal)
+    let promptError: unknown
+
+    try {
+      let pending = stream.next()
+
+      const promptPromise = this.sendPromptAsync(sessionId, message, opts).catch((err) => {
+        promptError = err
+        streamController.abort()
+        throw err
+      })
+
+      while (true) {
+        const next = await pending
+        if (next.done) break
+
+        const event = next.value
+        const relevant = isEventForSession(event, sessionId)
+        pending = stream.next()
+        if (!relevant) continue
+
+        yield event
+
+        if (event.type === 'session.idle' || event.type === 'session.error') {
+          break
+        }
+      }
+
+      await promptPromise
+    } catch (err) {
+      const rootErr = promptError ?? err
+      if (rootErr instanceof OpencodePilotError) {
+        throw rootErr
+      }
+      if (isConnectionError(rootErr)) {
+        throw new OpencodePilotError(
+          `Cannot connect to opencode event stream: ${normalizeError(rootErr).message}`,
+          rootErr,
+        )
+      }
+      throw normalizeError(rootErr)
+    } finally {
+      streamController.abort()
     }
-    return latestParts
+  }
+}
+
+function isEventForSession(event: OpencodeEvent, sessionId: string): boolean {
+  switch (event.type) {
+    case 'session.created':
+      return event.properties.info.id === sessionId
+
+    case 'session.idle':
+      return event.properties.sessionID === sessionId
+
+    case 'session.error':
+      return event.properties.sessionID === sessionId || event.properties.sessionID === undefined
+
+    case 'session.status':
+    case 'session.compacted':
+    case 'session.diff':
+    case 'todo.updated':
+    case 'command.executed':
+    case 'permission.replied':
+      return event.properties.sessionID === sessionId
+
+    case 'session.updated':
+    case 'session.deleted':
+      return event.properties.info.id === sessionId
+
+    case 'message.updated':
+      return (event.properties.info as { sessionID: string }).sessionID === sessionId
+
+    case 'message.removed':
+    case 'message.part.removed':
+      return event.properties.sessionID === sessionId
+
+    case 'message.part.updated':
+      return (event.properties.part as { sessionID: string }).sessionID === sessionId
+
+    case 'permission.updated':
+      return (event.properties as { sessionID: string }).sessionID === sessionId
+
+    case 'file.edited':
+    case 'installation.updated':
+    case 'installation.update-available':
+    case 'lsp.client.diagnostics':
+    case 'file.watcher.updated':
+    case 'server.instance.disposed':
+    case 'server.connected':
+    case 'tui.prompt.append':
+    case 'tui.command.execute':
+    case 'tui.toast.show':
+    case 'vcs.branch.updated':
+    case 'pty.created':
+    case 'pty.updated':
+    case 'pty.exited':
+    case 'pty.deleted':
+      return true
+
+    default:
+      return false
   }
 }
 
@@ -373,28 +439,6 @@ function buildSystemPrompt(system: string | undefined, username: string | undefi
 
   const userContext = `Current username: ${normalizedUsername}`
   return base ? `${base}\n\n${userContext}` : userContext
-}
-
-function splitTextIntoDeltas(text: string, maxChunkSize = 56): string[] {
-  if (!text) {
-    return ['']
-  }
-
-  const deltas: string[] = []
-  let cursor = 0
-
-  while (cursor < text.length) {
-    deltas.push(text.slice(cursor, cursor + maxChunkSize))
-    cursor += maxChunkSize
-  }
-
-  return deltas
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
 }
 
 function normalizeError(err: unknown): Error {
