@@ -83,8 +83,10 @@ export class SandboxPilot {
   }
 
   async createSession(): Promise<Session> {
+    console.log('[pilot] --> session.create')
     try {
       const result = await this.client.session.create({ throwOnError: true })
+      console.log('[pilot] <-- session.create', { id: result.data.id })
       return result.data
     } catch (err) {
       if (isConnectionError(err)) {
@@ -122,6 +124,12 @@ export class SandboxPilot {
     opts: ChatOptions,
   ): Promise<SessionPromptResponseData> {
     const promptPayload = this.buildPromptPayload(sessionId, message, opts)
+    console.log('[pilot] --> session.prompt', {
+      sessionId,
+      modelID: opts.modelID,
+      providerID: opts.providerID,
+      messageLength: message.length,
+    })
 
     try {
       const result = await this.client.session.prompt({
@@ -131,6 +139,10 @@ export class SandboxPilot {
       if (!result.data) {
         throw new Error('Prompt response did not include assistant message data')
       }
+      console.log('[pilot] <-- session.prompt', {
+        messageId: result.data.info?.id,
+        partCount: Array.isArray(result.data.parts) ? result.data.parts.length : 0,
+      })
       return result.data
     } catch (err) {
       if (isConnectionError(err)) {
@@ -144,8 +156,10 @@ export class SandboxPilot {
   }
 
   async listChatOptions(): Promise<ChatOptionsCatalog> {
+    console.log('[pilot] --> provider.list')
     try {
       const result = await this.client.provider.list({ throwOnError: true })
+      console.log('[pilot] <-- provider.list', { providerCount: Array.isArray(result.data?.all) ? result.data.all.length : 0 })
 
       const data = result.data
       const connected = new Set(Array.isArray(data.connected) ? data.connected : [])
@@ -316,11 +330,13 @@ export class SandboxPilot {
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
+        console.log('[pilot] --> session.message', { sessionId, messageID, attempt: attempt + 1 })
         const result = await this.client.session.message({
           path: { id: sessionId, messageID },
           throwOnError: true,
         })
         const parts = Array.isArray(result.data.parts) ? result.data.parts : []
+        console.log('[pilot] <-- session.message', { partCount: parts.length })
         latestParts = parts
         if (parts.length > 0) {
           return parts

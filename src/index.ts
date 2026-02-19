@@ -1,5 +1,6 @@
 import './env'
 import { Hono } from 'hono'
+import { logger } from 'hono/logger'
 import { serve } from '@hono/node-server'
 import { bearerAuth } from './auth'
 import { chatRoutes } from './routes/chat'
@@ -7,6 +8,8 @@ import { uiRoutes } from './routes/ui'
 import { workspaceRoutes } from './routes/workspace'
 
 const app = new Hono()
+
+app.use('*', logger())
 
 // Frontend UI routes
 app.route('/', uiRoutes())
