@@ -297,7 +297,6 @@ export class SandboxPilot {
     const requestMessageID = createRequestMessageID()
     const assistantMessageIDs = new Set<string>()
     let sawRequestActivity = false
-    let sawAssistantActivity = false
     let promptSettled = false
 
     try {
@@ -320,7 +319,11 @@ export class SandboxPilot {
 
       // 3. Iterate events, filter by sessionId, yield matching ones.
       while (true) {
-        const next = await pending
+        const next = await awaitNextWithTimeout(pending, promptSettled ? 15000 : 30000)
+        if (!next) {
+          // Avoid hanging forever if terminal events are not emitted.
+          break
+        }
         if (next.done) {
           break
         }
@@ -337,28 +340,27 @@ export class SandboxPilot {
           }
           if (info.role === 'assistant' && info.parentID === requestMessageID) {
             sawRequestActivity = true
-            sawAssistantActivity = true
+            assistantMessageIDs.add(info.id)
+          }
+          if (info.role === 'assistant' && promptSettled) {
+            sawRequestActivity = true
             assistantMessageIDs.add(info.id)
           }
         } else if (event.type === 'message.part.updated') {
           const partMessageID = event.properties.part.messageID
-          if (assistantMessageIDs.has(partMessageID) || sawRequestActivity) {
-            sawRequestActivity = true
-            sawAssistantActivity = true
-            assistantMessageIDs.add(partMessageID)
-          }
+          sawRequestActivity = true
+          assistantMessageIDs.add(partMessageID)
         } else if (event.type === 'message.part.removed') {
           const partMessageID = event.properties.messageID
-          if (assistantMessageIDs.has(partMessageID) || sawRequestActivity) {
-            sawRequestActivity = true
-            sawAssistantActivity = true
-            assistantMessageIDs.add(partMessageID)
-          }
+          sawRequestActivity = true
+          assistantMessageIDs.add(partMessageID)
+        } else if (event.type === 'session.status' && event.properties.status.type === 'busy') {
+          sawRequestActivity = true
         }
 
         if (event.type === 'session.idle') {
           // Ignore stale idle events that predate this specific request.
-          if (!(sawAssistantActivity || (sawRequestActivity && promptSettled))) {
+          if (!(promptSettled && sawRequestActivity)) {
             continue
           }
           yield event
@@ -366,8 +368,8 @@ export class SandboxPilot {
         }
 
         if (event.type === 'session.error') {
-          // Ignore stale errors unless this request has started or prompt is settled.
-          if (!(sawRequestActivity || promptSettled)) {
+          // Ignore stale errors that predate the current prompt.
+          if (!promptSettled) {
             continue
           }
           yield event
@@ -414,6 +416,18 @@ function buildSystemPrompt(system: string | undefined, username: string | undefi
 
 function createRequestMessageID(): string {
   return `msg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+async function awaitNextWithTimeout<T>(
+  nextPromise: Promise<IteratorResult<T>>,
+  timeoutMs: number,
+): Promise<IteratorResult<T> | null> {
+  return Promise.race([
+    nextPromise,
+    new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), timeoutMs)
+    }),
+  ])
 }
 
 /**
