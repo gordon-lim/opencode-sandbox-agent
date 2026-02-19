@@ -84,10 +84,12 @@ export class SandboxPilot {
     sessionId: string,
     message: string,
     opts: ChatOptions,
+    messageID?: string,
   ): SessionPromptParams {
     return {
       path: { id: sessionId },
       body: {
+        messageID,
         model: {
           modelID: opts.modelID,
           providerID: opts.providerID,
@@ -102,8 +104,9 @@ export class SandboxPilot {
     sessionId: string,
     message: string,
     opts: ChatOptions,
+    messageID?: string,
   ): Promise<SessionPromptResponseData> {
-    const promptPayload = this.buildPromptPayload(sessionId, message, opts)
+    const promptPayload = this.buildPromptPayload(sessionId, message, opts, messageID)
 
     try {
       const result = await this.client.session.prompt({
@@ -129,8 +132,9 @@ export class SandboxPilot {
     sessionId: string,
     message: string,
     opts: ChatOptions,
+    messageID?: string,
   ): Promise<void> {
-    const promptPayload = this.buildPromptPayload(sessionId, message, opts)
+    const promptPayload = this.buildPromptPayload(sessionId, message, opts, messageID)
 
     try {
       await this.client.session.promptAsync({
@@ -245,7 +249,8 @@ export class SandboxPilot {
   ): AsyncGenerator<OpencodeEvent> {
     if (opts.stream === false) {
       try {
-        const promptResult = await this.sendPrompt(sessionId, message, opts)
+        const requestMessageID = createRequestMessageID()
+        const promptResult = await this.sendPrompt(sessionId, message, opts, requestMessageID)
         if (!promptResult) {
           throw new Error('Prompt response did not include assistant message data')
         }
@@ -289,6 +294,11 @@ export class SandboxPilot {
     const streamController = new AbortController()
     const stream = await this.subscribe(streamController.signal)
     let promptError: unknown
+    const requestMessageID = createRequestMessageID()
+    const assistantMessageIDs = new Set<string>()
+    let sawRequestActivity = false
+    let sawAssistantActivity = false
+    let promptSettled = false
 
     try {
       // Kick off stream consumption immediately (SSE stream is lazy).
@@ -296,12 +306,17 @@ export class SandboxPilot {
       let pending = stream.next()
 
       // 2. Send the chat message in parallel.
-      const promptPromise = this.sendPromptAsync(sessionId, message, opts).catch((err) => {
-        promptError = err
-        // If prompt fails, stop waiting on the stream.
-        streamController.abort()
-        throw err
-      })
+      const promptPromise = this.sendPromptAsync(sessionId, message, opts, requestMessageID)
+        .then(() => {
+          promptSettled = true
+        })
+        .catch((err) => {
+          promptSettled = true
+          promptError = err
+          // If prompt fails, stop waiting on the stream.
+          streamController.abort()
+          throw err
+        })
 
       // 3. Iterate events, filter by sessionId, yield matching ones.
       while (true) {
@@ -315,12 +330,53 @@ export class SandboxPilot {
         pending = stream.next()
         if (!relevant) continue
 
+        if (event.type === 'message.updated') {
+          const info = event.properties.info
+          if (info.role === 'user' && info.id === requestMessageID) {
+            sawRequestActivity = true
+          }
+          if (info.role === 'assistant' && info.parentID === requestMessageID) {
+            sawRequestActivity = true
+            sawAssistantActivity = true
+            assistantMessageIDs.add(info.id)
+          }
+        } else if (event.type === 'message.part.updated') {
+          const partMessageID = event.properties.part.messageID
+          if (assistantMessageIDs.has(partMessageID) || sawRequestActivity) {
+            sawRequestActivity = true
+            sawAssistantActivity = true
+            assistantMessageIDs.add(partMessageID)
+          }
+        } else if (event.type === 'message.part.removed') {
+          const partMessageID = event.properties.messageID
+          if (assistantMessageIDs.has(partMessageID) || sawRequestActivity) {
+            sawRequestActivity = true
+            sawAssistantActivity = true
+            assistantMessageIDs.add(partMessageID)
+          }
+        }
+
+        if (event.type === 'session.idle') {
+          // Ignore stale idle events that predate this specific request.
+          if (!(sawAssistantActivity || (sawRequestActivity && promptSettled))) {
+            continue
+          }
+          yield event
+          break
+        }
+
+        if (event.type === 'session.error') {
+          // Ignore stale errors unless this request has started or prompt is settled.
+          if (!(sawRequestActivity || promptSettled)) {
+            continue
+          }
+          yield event
+          break
+        }
+
         yield event
 
         // 4. Break on terminal events (after yielding them)
-        if (event.type === 'session.idle' || event.type === 'session.error') {
-          break
-        }
       }
 
       // 5. Surface prompt failures after streaming terminal event(s).
@@ -354,6 +410,10 @@ function buildSystemPrompt(system: string | undefined, username: string | undefi
 
   const userContext = `Current username: ${normalizedUsername}`
   return base ? `${base}\n\n${userContext}` : userContext
+}
+
+function createRequestMessageID(): string {
+  return `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 /**
