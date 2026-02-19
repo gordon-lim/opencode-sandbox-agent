@@ -94,8 +94,10 @@ yarn start
 
 ## SDK + Runtime Notes
 
-- Current local SDK dependency (`@opencode-ai/sdk@0.1.0-alpha.21` from `../opencode-sdk-js`) is effectively client-only for this project's current integration.
-- Newer SDK (`@opencode-ai/sdk` 1.x) exposes server helpers in root and v2 exports (`createOpencodeServer()`, `createOpencode()`).
+- This branch uses `@opencode-ai/sdk` 1.x from `file:../opencode/packages/sdk/js` (root API).
+- Chat send APIs here are `session.prompt()` and `session.promptAsync()`.
+- SDK v0 (`@opencode-ai/sdk` 0.x, including `session.chat`) is not supported in this branch.
+- SDK 1.x exposes server helpers in root and v2 exports (`createOpencodeServer()`, `createOpencode()`).
 - These helpers do not embed opencode server code in-process. They spawn external `opencode serve` as a child process, so the `opencode` binary/runtime still must be installed.
 
 ## API Quick Use

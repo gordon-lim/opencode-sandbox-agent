@@ -12,7 +12,7 @@
   "dependencies": {
     "@hono/node-server": "^1.19.6",
     "hono": "^4.10.7",
-    "@opencode-ai/sdk": "file:../opencode-sdk-js"
+    "@opencode-ai/sdk": "file:../opencode/packages/sdk/js"
   },
   "devDependencies": {
     "@types/node": "^22.18.6",
