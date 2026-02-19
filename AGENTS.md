@@ -8,7 +8,12 @@
 
 ### SDK dependency
 
-`package.json` references `@opencode-ai/sdk` as `file:../opencode-sdk-js`. This sibling directory does not exist in the repo and must be populated from npm before `yarn install`. The update script handles this automatically by running `npm pack @opencode-ai/sdk@0.1.0-alpha.21` and extracting it to `/opencode-sdk-js`.
+There are three branches with different SDK setups:
+- **main**: references `@opencode-ai/sdk` as `file:../opencode-sdk-js` (legacy alpha SDK v0.1.0-alpha.21). The update script provisions this at `/opencode-sdk-js` via `npm pack`.
+- **v1**: uses `@opencode-ai/sdk` (root export) from npm `^1.2.6`. Imports `createOpencodeClient` and uses the hey-api v1 call pattern (single options object with `path`/`body`).
+- **v2**: uses `@opencode-ai/sdk/v2` from npm `^1.2.6`. Imports `createOpencodeClient` and uses the v2 call pattern (flattened parameters + options). Uses both `session.prompt` (sync) and `session.promptAsync` (fire-and-forget for SSE streaming).
+
+On **v1** and **v2** branches, `yarn install` works directly. On **main**, the update script must provision the local SDK first.
 
 ### Running the app
 
