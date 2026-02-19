@@ -29,9 +29,15 @@ There is no separate lint script. Use `yarn typecheck` (`tsc --noEmit`) as the p
 
 The project has no test suite or test framework configured. Validation is done via type checking and manual API/UI testing.
 
+### Required secrets
+
+- `OPENAI_API_KEY` — needed to test chat with OpenAI models (e.g. `gpt-4.1-mini`). Write it into `.env.opencode` so the opencode server picks it up.
+
+The built-in `opencode` provider (model `big-pickle`) works without any secrets and is sufficient for basic chat testing.
+
 ### Environment files
 
-Copy `.env.example` to `.env` and set `AGENT_API_KEY` to a real value (the app throws at startup if unset). The `.env.example` fallback provides defaults for other values. For the opencode server, copy `.env.opencode.example` to `.env.opencode` and fill in provider API keys.
+Copy `.env.example` to `.env` and set `AGENT_API_KEY` to a real value (the app throws at startup if unset). The `.env.example` fallback provides defaults for other values. For the opencode server, copy `.env.opencode.example` to `.env.opencode` and fill in provider API keys (including `OPENAI_API_KEY` for OpenAI models).
 
 ### Workspace sandbox
 
