@@ -191,65 +191,74 @@ export class SandboxPilot {
     message: string,
     opts: ChatOptions,
   ): AsyncGenerator<EventListResponse> {
-    if (opts.stream === false) {
-      const stream = await this.subscribe()
-      const bufferedEvents: EventListResponse[] = []
-      let reachedTerminal = false
-
-      try {
-        await this.chat(sessionId, message, opts)
-
-        for await (const event of stream) {
-          const relevant = isEventForSession(event, sessionId)
-          if (!relevant) continue
-
-          bufferedEvents.push(event)
-
-          if (event.type === 'session.idle' || event.type === 'session.error') {
-            reachedTerminal = true
-            break
-          }
-        }
-      } finally {
-        stream.controller.abort()
-      }
-
-      if (!reachedTerminal) {
-        bufferedEvents.push({
-          type: 'session.idle',
-          properties: {
-            sessionID: sessionId,
-          },
-        })
-      }
-
-      for (const event of bufferedEvents) {
-        yield event
-      }
-      return
-    }
+    const shouldBufferEvents = opts.stream === false
+    const bufferedEvents: EventListResponse[] = []
 
     // 1. Subscribe FIRST so we miss no events
     const stream = await this.subscribe()
+    let promptError: unknown
 
     try {
-      // 2. Send the chat message
-      await this.chat(sessionId, message, opts)
+      // Kick off stream consumption immediately (stream is lazy).
+      // This ensures /event starts before we send the prompt.
+      const streamIterator = stream[Symbol.asyncIterator]()
+      let pending = streamIterator.next()
 
-      // 3. Iterate events, filter by sessionId, yield matching ones
-      for await (const event of stream) {
+      // 2. Send the chat message in parallel.
+      const promptPromise = this.chat(sessionId, message, opts).catch((err) => {
+        promptError = err
+        stream.controller.abort()
+        throw err
+      })
+
+      // 3. Iterate events, filter by sessionId.
+      while (true) {
+        const next = await pending
+        if (next.done) {
+          break
+        }
+
+        const event = next.value
         const relevant = isEventForSession(event, sessionId)
+        pending = streamIterator.next()
         if (!relevant) continue
 
-        yield event
+        if (shouldBufferEvents) {
+          bufferedEvents.push(event)
+        } else {
+          yield event
+        }
 
         // 4. Break on terminal events (after yielding them)
         if (event.type === 'session.idle' || event.type === 'session.error') {
           break
         }
       }
+
+      // 5. Surface prompt failures after terminal event(s).
+      await promptPromise
+
+      if (shouldBufferEvents) {
+        const hasTerminal = bufferedEvents.some((event) => (
+          event.type === 'session.idle' || event.type === 'session.error'
+        ))
+        if (!hasTerminal) {
+          bufferedEvents.push({
+            type: 'session.idle',
+            properties: {
+              sessionID: sessionId,
+            },
+          })
+        }
+
+        for (const event of bufferedEvents) {
+          yield event
+        }
+      }
+    } catch (err) {
+      throw promptError ?? err
     } finally {
-      // 5. Always abort the underlying HTTP stream
+      // Always abort the underlying HTTP stream.
       stream.controller.abort()
     }
   }
