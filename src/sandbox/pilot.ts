@@ -43,6 +43,23 @@ type SessionPromptResponseData = NonNullable<
   Awaited<ReturnType<ReturnType<typeof createOpencodeClient>['session']['prompt']>>['data']
 >
 
+const CHAT_TOOLS_DISABLED: Record<string, boolean> = {
+  question: false,
+  bash: false,
+  read: false,
+  glob: false,
+  grep: false,
+  edit: false,
+  write: false,
+  task: false,
+  webfetch: false,
+  todowrite: false,
+  websearch: false,
+  codesearch: false,
+  skill: false,
+  apply_patch: false,
+}
+
 export class SandboxPilot {
   readonly client: ReturnType<typeof createOpencodeClient>
 
@@ -84,16 +101,15 @@ export class SandboxPilot {
     sessionId: string,
     message: string,
     opts: ChatOptions,
-    messageID?: string,
   ): SessionPromptParams {
     return {
       path: { id: sessionId },
       body: {
-        messageID,
         model: {
           modelID: opts.modelID,
           providerID: opts.providerID,
         },
+        tools: CHAT_TOOLS_DISABLED,
         system: buildSystemPrompt(opts.system, opts.username),
         parts: [{ type: 'text', text: message }],
       },
@@ -104,9 +120,8 @@ export class SandboxPilot {
     sessionId: string,
     message: string,
     opts: ChatOptions,
-    messageID?: string,
   ): Promise<SessionPromptResponseData> {
-    const promptPayload = this.buildPromptPayload(sessionId, message, opts, messageID)
+    const promptPayload = this.buildPromptPayload(sessionId, message, opts)
 
     try {
       const result = await this.client.session.prompt({
@@ -126,35 +141,6 @@ export class SandboxPilot {
       }
       throw normalizeError(err)
     }
-  }
-
-  async sendPromptAsync(
-    sessionId: string,
-    message: string,
-    opts: ChatOptions,
-    messageID?: string,
-  ): Promise<void> {
-    const promptPayload = this.buildPromptPayload(sessionId, message, opts, messageID)
-
-    try {
-      await this.client.session.promptAsync({
-        ...promptPayload,
-        throwOnError: true,
-      })
-    } catch (err) {
-      if (isConnectionError(err)) {
-        throw new OpencodePilotError(
-          `Cannot reach opencode server: ${normalizeError(err).message}`,
-          err,
-        )
-      }
-      throw normalizeError(err)
-    }
-  }
-
-  async subscribe(signal: AbortSignal): Promise<AsyncGenerator<OpencodeEvent>> {
-    const result = await this.client.event.subscribe({ signal })
-    return result.stream
   }
 
   async listChatOptions(): Promise<ChatOptionsCatalog> {
@@ -247,164 +233,69 @@ export class SandboxPilot {
     message: string,
     opts: ChatOptions,
   ): AsyncGenerator<OpencodeEvent> {
-    if (opts.stream === false) {
-      try {
-        const requestMessageID = createRequestMessageID()
-        const promptResult = await this.sendPrompt(sessionId, message, opts, requestMessageID)
-        if (!promptResult) {
-          throw new Error('Prompt response did not include assistant message data')
-        }
-        const promptParts = await this.getPromptPartsWithRetry(
-          sessionId,
-          promptResult.info.id,
-          promptResult.parts,
-        )
+    try {
+      const promptResult = await this.sendPrompt(sessionId, message, opts)
+      if (!promptResult) {
+        throw new Error('Prompt response did not include assistant message data')
+      }
+      const promptParts = await this.getPromptPartsWithRetry(
+        sessionId,
+        promptResult.info.id,
+        promptResult.parts,
+      )
 
-        yield {
-          type: 'message.updated',
-          properties: {
-            info: promptResult.info,
-          },
-        }
-        for (const part of promptParts) {
+      yield {
+        type: 'message.updated',
+        properties: {
+          info: promptResult.info,
+        },
+      }
+
+      const preferDeltas = opts.stream !== false
+      for (const part of promptParts) {
+        if (!(preferDeltas && part.type === 'text' && part.text)) {
           yield {
             type: 'message.part.updated',
             properties: {
               part,
             },
           }
-        }
-        yield {
-          type: 'session.idle',
-          properties: {
-            sessionID: sessionId,
-          },
-        }
-      } catch (err) {
-        if (err instanceof OpencodePilotError) {
-          throw err
-        }
-        if (isConnectionError(err)) {
-          throw new OpencodePilotError(
-            `Cannot connect to opencode event stream: ${normalizeError(err).message}`,
-            err,
-          )
-        }
-        throw normalizeError(err)
-      }
-      return
-    }
-
-    // 1. Subscribe FIRST so we miss no events
-    const streamController = new AbortController()
-    const stream = await this.subscribe(streamController.signal)
-    let promptError: unknown
-    const requestMessageID = createRequestMessageID()
-    let sawRequestActivity = false
-    let promptSettled = false
-
-    try {
-      // Kick off stream consumption immediately (SSE stream is lazy).
-      // This ensures /event starts before we send the prompt.
-      let pending = stream.next()
-
-      // 2. Send the chat message in parallel.
-      const promptPromise = this.sendPromptAsync(sessionId, message, opts, requestMessageID)
-        .then(() => {
-          promptSettled = true
-        })
-        .catch((err) => {
-          promptSettled = true
-          promptError = err
-          // If prompt fails, stop waiting on the stream.
-          streamController.abort()
-          throw err
-        })
-
-      // 3. Iterate events, filter by sessionId, yield matching ones.
-      while (true) {
-        const next = await awaitNextWithTimeout(pending, promptSettled ? 15000 : 30000)
-        if (!next) {
-          // Avoid hanging forever if terminal events are not emitted.
-          break
-        }
-        if (next.done) {
-          break
+          continue
         }
 
-        const event = next.value
-        const relevant = isEventForSession(event, sessionId)
-        pending = stream.next()
-        if (!relevant) continue
-
-        if (event.type === 'message.updated') {
-          const info = event.properties.info
-          if (info.role === 'user' && info.id === requestMessageID) {
-            sawRequestActivity = true
+        let textSoFar = ''
+        for (const delta of splitTextIntoDeltas(part.text)) {
+          textSoFar += delta
+          yield {
+            type: 'message.part.updated',
+            properties: {
+              part: {
+                ...part,
+                text: textSoFar,
+              },
+              delta,
+            },
           }
-          if (info.role === 'assistant' && info.parentID === requestMessageID) {
-            sawRequestActivity = true
-          }
-        } else if (event.type === 'message.part.updated') {
-          sawRequestActivity = true
-        } else if (event.type === 'message.part.removed') {
-          sawRequestActivity = true
-        } else if (
-          event.type === 'session.status' &&
-          (event.properties.status.type === 'busy' || event.properties.status.type === 'retry')
-        ) {
-          sawRequestActivity = true
         }
-
-        if (event.type === 'session.idle') {
-          // Ignore stale idle events that predate this specific request.
-          if (!(promptSettled && sawRequestActivity)) {
-            continue
-          }
-          yield event
-          break
-        }
-
-        if (event.type === 'session.error') {
-          // Ignore stale errors that predate the current prompt.
-          if (!promptSettled) {
-            continue
-          }
-          yield event
-          break
-        }
-
-        if (event.type === 'session.status' && event.properties.status.type === 'idle') {
-          // Some runtimes emit session.status(idle) without session.idle.
-          if (!(promptSettled && sawRequestActivity)) {
-            continue
-          }
-          yield event
-          break
-        }
-
-        yield event
-
-        // 4. Break on terminal events (after yielding them)
       }
 
-      // 5. Surface prompt failures after streaming terminal event(s).
-      await promptPromise
+      yield {
+        type: 'session.idle',
+        properties: {
+          sessionID: sessionId,
+        },
+      }
     } catch (err) {
-      const rootErr = promptError ?? err
-      if (rootErr instanceof OpencodePilotError) {
-        throw rootErr
+      if (err instanceof OpencodePilotError) {
+        throw err
       }
-      if (isConnectionError(rootErr)) {
+      if (isConnectionError(err)) {
         throw new OpencodePilotError(
-          `Cannot connect to opencode event stream: ${normalizeError(rootErr).message}`,
-          rootErr,
+          `Cannot connect to opencode event stream: ${normalizeError(err).message}`,
+          err,
         )
       }
-      throw normalizeError(rootErr)
-    } finally {
-      // Always abort the underlying HTTP stream.
-      streamController.abort()
+      throw normalizeError(err)
     }
   }
 
@@ -468,86 +359,26 @@ function buildSystemPrompt(system: string | undefined, username: string | undefi
   return base ? `${base}\n\n${userContext}` : userContext
 }
 
-function createRequestMessageID(): string {
-  return `msg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
-}
+function splitTextIntoDeltas(text: string, maxChunkSize = 56): string[] {
+  if (!text) {
+    return ['']
+  }
 
-async function awaitNextWithTimeout<T>(
-  nextPromise: Promise<IteratorResult<T>>,
-  timeoutMs: number,
-): Promise<IteratorResult<T> | null> {
-  return Promise.race([
-    nextPromise,
-    new Promise<null>((resolve) => {
-      setTimeout(() => resolve(null), timeoutMs)
-    }),
-  ])
+  const deltas: string[] = []
+  let cursor = 0
+
+  while (cursor < text.length) {
+    deltas.push(text.slice(cursor, cursor + maxChunkSize))
+    cursor += maxChunkSize
+  }
+
+  return deltas
 }
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
-}
-
-/**
- * Returns true if the event belongs to the given sessionId.
- */
-function isEventForSession(event: OpencodeEvent, sessionId: string): boolean {
-  switch (event.type) {
-    case 'session.created':
-      return event.properties.info.id === sessionId
-
-    case 'session.idle':
-    case 'session.compacted':
-    case 'session.status':
-    case 'session.diff':
-    case 'todo.updated':
-    case 'command.executed':
-    case 'permission.updated':
-    case 'permission.replied':
-      return event.properties.sessionID === sessionId
-
-    case 'session.error':
-      // sessionID is optional on session.error
-      return event.properties.sessionID === sessionId || event.properties.sessionID === undefined
-
-    case 'session.updated':
-    case 'session.deleted':
-      return event.properties.info.id === sessionId
-
-    case 'message.updated':
-      return event.properties.info.sessionID === sessionId
-
-    case 'message.removed':
-    case 'message.part.removed':
-      return event.properties.sessionID === sessionId
-
-    case 'message.part.updated':
-      return event.properties.part.sessionID === sessionId
-
-    // Ignore global pass-through events to keep one /chat request bounded.
-    case 'file.edited':
-    case 'installation.updated':
-    case 'installation.update-available':
-    case 'lsp.client.diagnostics':
-    case 'lsp.updated':
-    case 'file.watcher.updated':
-    case 'vcs.branch.updated':
-    case 'tui.prompt.append':
-    case 'tui.command.execute':
-    case 'tui.toast.show':
-    case 'pty.created':
-    case 'pty.updated':
-    case 'pty.exited':
-    case 'pty.deleted':
-    case 'server.instance.disposed':
-    case 'server.connected':
-      return false
-
-    default:
-      return false
-  }
 }
 
 function normalizeError(err: unknown): Error {

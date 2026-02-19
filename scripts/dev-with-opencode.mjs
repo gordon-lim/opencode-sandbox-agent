@@ -44,7 +44,7 @@ if (!['http:', 'https:'].includes(baseURL.protocol)) {
 }
 
 const hostname = baseURL.hostname || '127.0.0.1'
-const port = baseURL.port || (baseURL.protocol === 'https:' ? '443' : '80')
+const defaultOpencodePort = baseURL.protocol === 'https:' ? 443 : 80
 
 if (baseURL.pathname !== '/' || baseURL.search || baseURL.hash) {
   console.warn(
@@ -55,8 +55,6 @@ if (baseURL.pathname !== '/' || baseURL.search || baseURL.hash) {
 const childEnv = { ...process.env }
 const workspaceRoot = path.resolve(ROOT_DIR, process.env.WORKSPACE_ROOT ?? 'sandbox_workspace')
 mkdirSync(workspaceRoot, { recursive: true })
-
-const opencodeArgs = ['serve', `--hostname=${hostname}`, `--port=${port}`]
 const appArgs = ['--watch', '--import', 'tsx', 'src/index.ts']
 
 function parsePort(rawPort, fallbackPort) {
@@ -67,7 +65,7 @@ function parsePort(rawPort, fallbackPort) {
   return fallbackPort
 }
 
-function canListenOnPort(candidatePort) {
+function canListenOnPort(candidatePort, host) {
   return new Promise((resolve, reject) => {
     const tester = createServer()
     tester.unref()
@@ -82,28 +80,45 @@ function canListenOnPort(candidatePort) {
       reject(error)
     })
 
-    tester.listen(candidatePort, () => {
+    tester.listen(candidatePort, host, () => {
       tester.close(() => resolve(true))
     })
   })
 }
 
-async function findAvailablePort(startPort, maxAttempts = 100) {
+async function findAvailablePort(startPort, maxAttempts = 100, label = 'port', host) {
   let portToTry = startPort
   const endPort = Math.min(65_535, startPort + maxAttempts - 1)
 
   while (portToTry <= endPort) {
-    if (await canListenOnPort(portToTry)) {
+    if (await canListenOnPort(portToTry, host)) {
       return portToTry
     }
     portToTry += 1
   }
 
-  throw new Error(`Could not find an available app port in range ${startPort}-${endPort}`)
+  throw new Error(`Could not find an available ${label} in range ${startPort}-${endPort}`)
+}
+
+const preferredOpencodePort = parsePort(baseURL.port, defaultOpencodePort)
+const selectedOpencodePort = await findAvailablePort(
+  preferredOpencodePort,
+  100,
+  'opencode port',
+  hostname,
+)
+const selectedOpencodeBaseURL = `${baseURL.protocol}//${hostname}:${selectedOpencodePort}`
+childEnv.OPENCODE_BASE_URL = selectedOpencodeBaseURL
+const opencodeArgs = ['serve', `--hostname=${hostname}`, `--port=${selectedOpencodePort}`]
+
+if (selectedOpencodePort !== preferredOpencodePort) {
+  console.warn(
+    `[dev] opencode port ${preferredOpencodePort} is unavailable; using ${selectedOpencodePort}`,
+  )
 }
 
 const preferredAppPort = parsePort(childEnv.PORT, 3000)
-const selectedAppPort = await findAvailablePort(preferredAppPort)
+const selectedAppPort = await findAvailablePort(preferredAppPort, 100, 'app port')
 childEnv.PORT = String(selectedAppPort)
 
 if (selectedAppPort !== preferredAppPort) {
