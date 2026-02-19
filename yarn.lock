@@ -137,8 +137,10 @@
   resolved "https://registry.yarnpkg.com/@hono/node-server/-/node-server-1.19.9.tgz#8f37119b1acf283fd3f6035f3d1356fdb97a09ac"
   integrity sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw==
 
-"@opencode-ai/sdk@file:../opencode/packages/sdk/js":
-  version "1.2.5"
+"@opencode-ai/sdk@^1.2.6":
+  version "1.2.6"
+  resolved "https://registry.yarnpkg.com/@opencode-ai/sdk/-/sdk-1.2.6.tgz#e33578df77c5cf4e01408d153e97063e1f99390b"
+  integrity sha512-dWMF8Aku4h7fh8sw5tQ2FtbqRLbIFT8FcsukpxTird49ax7oUXP+gzqxM/VdxHjfksQvzLBjLZyMdDStc5g7xA==
 
 "@types/node@^22.18.6":
   version "22.19.11"
