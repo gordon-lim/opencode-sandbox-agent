@@ -719,12 +719,22 @@ function handleStreamEvent(event) {
     const messageID = typeof part.messageID === 'string' ? part.messageID : ''
     const partID = typeof part.id === 'string' ? part.id : ''
     const text = typeof part.text === 'string' ? part.text : ''
+    const delta = typeof event.properties?.delta === 'string' ? event.properties.delta : ''
     if (!messageID || !partID) {
       return
     }
 
     const role = state.messageRoles.get(messageID)
     if (role === 'user' || state.userMessageIDs.has(messageID)) {
+      return
+    }
+
+    if (delta) {
+      appendAssistantTextDelta(messageID, partID, delta)
+      if (text) {
+        // Keep full-text snapshots authoritative when provided.
+        upsertAssistantText(messageID, partID, text)
+      }
       return
     }
 
