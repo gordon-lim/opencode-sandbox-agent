@@ -413,7 +413,7 @@ function buildSystemPrompt(system: string | undefined, username: string | undefi
 }
 
 function createRequestMessageID(): string {
-  return `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  return `msg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
 }
 
 /**
