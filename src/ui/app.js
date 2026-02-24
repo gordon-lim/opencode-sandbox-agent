@@ -38,7 +38,7 @@ const TOOL_CHIP_STATUS_CLASSES = [
 
 const state = {
   selectedFilePath: '',
-  sessionId: localStorage.getItem(STORAGE_KEYS.sessionID) ?? '',
+  sessionId: '', // always start with no session so each page load gets a new session
   streaming: false,
   providerCatalog: new Map(),
   assistantByMessageID: new Map(),
