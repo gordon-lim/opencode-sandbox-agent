@@ -42,21 +42,23 @@ type SessionPromptResponseData = NonNullable<
   Awaited<ReturnType<ReturnType<typeof createOpencodeClient>['session']['prompt']>>['data']
 >
 
-const CHAT_TOOLS_DISABLED: Record<string, boolean> = {
-  question: false,
-  bash: false,
-  read: false,
-  glob: false,
-  grep: false,
-  edit: false,
-  write: false,
-  task: false,
-  webfetch: false,
-  todowrite: false,
-  websearch: false,
-  codesearch: false,
-  skill: false,
-  apply_patch: false,
+// OpenCode tools config uses booleans as enabled/disabled flags.
+// Setting a tool to false disables it and can lead to "pretend" tool usage in text.
+const CHAT_TOOLS_ENABLED: Record<string, boolean> = {
+  question: true,
+  bash: true,
+  read: true,
+  glob: true,
+  grep: true,
+  edit: true,
+  write: true,
+  task: true,
+  webfetch: true,
+  todowrite: true,
+  websearch: true,
+  codesearch: true,
+  skill: true,
+  apply_patch: true,
 }
 
 export class SandboxPilot {
@@ -110,7 +112,7 @@ export class SandboxPilot {
           modelID: opts.modelID,
           providerID: opts.providerID,
         },
-        tools: CHAT_TOOLS_DISABLED,
+        tools: CHAT_TOOLS_ENABLED,
         system: buildSystemPrompt(opts.system, opts.username),
         parts: [{ type: 'text', text: message }],
       },
