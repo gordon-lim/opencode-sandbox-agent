@@ -38,7 +38,7 @@ const TOOL_CHIP_STATUS_CLASSES = [
 
 const state = {
   selectedFilePath: '',
-  sessionId: localStorage.getItem(STORAGE_KEYS.sessionID) ?? '',
+  sessionId: '',
   streaming: false,
   providerCatalog: new Map(),
   assistantByMessageID: new Map(),
