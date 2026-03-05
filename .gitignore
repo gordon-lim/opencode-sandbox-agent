@@ -19,6 +19,7 @@ out/
 .env.development
 .env.production
 .env.test
+.env.opencode
 
 # Logs
 logs/
